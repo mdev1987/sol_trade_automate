@@ -15,3 +15,5 @@ journal.json
 *.csv
 .vscode/
 .ruff_cache/
+# runtime lockfile
+.sniper-bot.lock
