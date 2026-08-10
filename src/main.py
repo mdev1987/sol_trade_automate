@@ -40,8 +40,9 @@ async def main() -> None:
     stop = asyncio.Event()
 
     def _shutdown(*_) -> None:  # noqa: ANN002 — SIGINT/SIGTERM handler
-        log.info("Shutdown signal received — closing the gate")
-        stop.set()
+        if not stop.is_set():  # signals can arrive twice (timeout/uv forwarding)
+            log.info("Shutdown signal received — closing the gate")
+            stop.set()
 
     async def _telegram_stop() -> None:
         # called by /stop after the gate closes: same graceful path as signals
