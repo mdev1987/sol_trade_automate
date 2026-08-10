@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time as _t
 from typing import Optional
 
 from config import settings, USDC_DECIMALS
@@ -24,7 +25,7 @@ from monitoring import append_journal, append_trade_log
 from price_monitor import PriceMonitor
 from risk_management import RiskManager
 from stats import TradeStats
-from telegram_bot import TelegramCommandBot
+from telegram_bot import TelegramNotifier
 from token_scanner import Candidate
 
 log = logging.getLogger("sniper_bot.bot")
@@ -39,7 +40,7 @@ _DRY_PROCEEDS = {"take_profit": lambda s: s.take_profit,
 
 async def execute_trade(candidate: Candidate, risk: RiskManager,
                         jupiter: JupiterSwap, ds: DexScreenerClient,
-                        notifier: TelegramCommandBot,
+                        notifier: TelegramNotifier,
                         stats: Optional[TradeStats] = None) -> tuple[bool, str]:
     """One full trade cycle. Returns (won, exit_reason)."""
     amount = risk.play_amount
@@ -89,6 +90,13 @@ async def execute_trade(candidate: Candidate, risk: RiskManager,
     if stats:
         stats.record_buy(mint, candidate.launch.symbol, amount, entry_price,
                          monitor.take_profit_price, monitor.stop_loss_price)
+        age_s = _t.time() - candidate.launch.created_at if candidate.launch.created_at else 0.0
+        await notifier.send_buy(
+            mint, candidate.launch.symbol, candidate.score, entry_price,
+            liquidity_usd, pair.volume_m5 if pair else 0.0,
+            pair.buy_sell_ratio if pair else 0.0, age_s,
+            amount, stats.balance_usd,
+        )
     signal = await monitor.run_until_exit()
     log.info("EXIT SIGNAL: %s @ $%s", signal.reason, signal.price_usd)
 
@@ -121,9 +129,17 @@ async def execute_trade(candidate: Candidate, risk: RiskManager,
     next_amount = risk.record_result(won)
     log.info("RESULT: %s (%s) — next trade $%.2f", "WIN" if won else "LOSS",
              exit_reason, next_amount)
+    hold_s = 0.0
     if stats:
+        opened_at = stats.active_position.get("opened_at", 0.0)
+        hold_s = _t.monotonic() - opened_at if opened_at else 0.0
         stats.record_exit(won, pnl_usd, proceeds_usd, exit_reason,
                           signal.price_usd or 0.0, sell_result.signature)
+        roi_pct = (pnl_usd / amount * 100.0) if amount else 0.0
+        await notifier.send_sell(
+            mint, candidate.launch.symbol, exit_reason, pnl_usd, roi_pct,
+            amount, proceeds_usd, hold_s, stats.balance_usd,
+        )
 
     append_trade_log({
         "mint": mint, "symbol": candidate.launch.symbol, "action": "buy+sell",
@@ -137,11 +153,6 @@ async def execute_trade(candidate: Candidate, risk: RiskManager,
                     "entry_price": entry_price, "exit_price": signal.price_usd,
                     "play_amount": amount, "next_amount": next_amount,
                     "pnl_usd": round(pnl_usd, 6), "dry_run": settings.dry_run})
-    await notifier.notify(
-        f"**{'✅ WIN' if won else '❌ LOSS'}** {candidate.launch.symbol}\n"
-        f"{exit_reason} @ ${signal.price_usd}\n"
-        f"PnL `{pnl_usd:+.2f}` · play `${amount:.2f}` → next `${next_amount:.2f}`"
-    )
     return won, exit_reason
 
 
@@ -162,16 +173,44 @@ async def trade_loop(queue: asyncio.Queue[Candidate], gate: TradeGate,
         notifier = build_telegram_bot(gate, stats or TradeStats(dry_run=settings.dry_run))
     try:
         while True:
-            await gate.wait()                # paused until /start or auto-start
-            await risk.wait_if_paused()      # loss-pause circuit breaker
-            candidate = await queue.get()
+            await gate.wait()                # paused until /start, auto-start, or shutdown
+            if gate.shutdown:
+                log.info("Gate shutdown — trade loop exiting")
+                break
+            await _wait_risk_paused(risk, gate)  # loss-pause breaker, shutdown-aware
+            candidate = await _queue_get(queue, gate)
+            if candidate is None:
+                break  # shutdown while waiting for a candidate
             try:
                 await execute_trade(candidate, risk, jupiter, ds, notifier, stats)
+                if stats is not None:
+                    stats.quote_gate = jupiter.quote_summary()
             except Exception:  # noqa: BLE001 — one bad trade must not kill the loop
                 log.exception("Trade cycle failed for %s", candidate.launch.mint)
     finally:
         await jupiter.close()
         await ds.close()
+
+
+async def _queue_get(queue: asyncio.Queue, gate: TradeGate):
+    """Get a candidate, waking every second to notice shutdown (queue may be idle)."""
+    while True:
+        try:
+            return await asyncio.wait_for(queue.get(), timeout=1.0)
+        except asyncio.TimeoutError:
+            if gate.shutdown:
+                return None
+
+
+async def _wait_risk_paused(risk: RiskManager, gate: TradeGate) -> None:
+    """Wait out a loss pause, waking every second to notice shutdown."""
+    while True:
+        try:
+            await asyncio.wait_for(risk.wait_if_paused(), timeout=1.0)
+            return
+        except asyncio.TimeoutError:
+            if gate.shutdown:
+                return
 
 
 if __name__ == "__main__":

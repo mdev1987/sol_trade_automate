@@ -41,6 +41,7 @@ class TokenLaunch:
     is_mayhem_mode: bool
     is_cashback_enabled: bool
     source: str                       # "pumpapi" | "pumpdev"
+    created_at: float = 0.0           # epoch seconds (0 = unknown)
     raw: dict = field(default_factory=dict)
 
     @classmethod
@@ -62,6 +63,14 @@ class TokenLaunch:
             if ev.get("quoteMint") in ("So11111111111111111111111111111111111111112", "So11111111111111111111111111111111111111111")
             else ev.get("marketCapSol")
         )
+        # launch time — pumpapi `timestamp` (epoch s; ms if > 1e12), pumpdev best-effort
+        ts = ev.get("timestamp") or ev.get("createdAt") or ev.get("blockTime") or 0
+        try:
+            ts = float(ts)
+            if ts > 1e12:
+                ts /= 1000.0
+        except (TypeError, ValueError):
+            ts = 0.0
         return cls(
             mint=ev.get("mint", ""),
             name=ev.get("name", ""),
@@ -76,6 +85,7 @@ class TokenLaunch:
             is_mayhem_mode=bool(ev.get("isMayhemMode", ev.get("mayhemMode", False))),
             is_cashback_enabled=bool(ev.get("isCashbackEnabled", ev.get("cashbackEnabled", False))),
             source=source,
+            created_at=ts,
             raw=ev,
         )
 

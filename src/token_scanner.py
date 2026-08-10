@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from typing import Optional
 from datetime import datetime, timezone
@@ -100,6 +101,9 @@ async def scan_loop(queue: asyncio.Queue[Candidate],
         while True:
             if gate is not None:
                 await gate.wait()
+                if gate.shutdown:
+                    log.info("Gate shutdown — scanner exiting")
+                    break
             cycle_start = time.monotonic()
             log.info("=== New scan cycle started (window %d min) ===", settings.max_scan_window_min)
             async for launch in stream.launches():

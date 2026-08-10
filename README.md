@@ -64,14 +64,22 @@ tokens, then go live with $2 USDC.
 
 ## Telegram control
 
+Command bot (`python-telegram-bot` `Application`/`CommandHandler` — docs in
+`bot_plan/docs/telegram_bot_docs/`) plus markdown trade cards
+(`telegramify-markdown` entities, no `parse_mode`) ported from
+`bot_plan/sample_telegram_code.txt`.
+
 | Command | Action |
 |---|---|
 | `/start` | open the trade gate (resume trading) |
 | `/stop` | graceful shutdown: gate closes, in-flight trade finishes, exit 0 |
-| `/status` | balance, winrate, realized PnL, active position (markdown + icons) |
+| `/status` | balance, winrate, realized PnL, active position, quote-gate stats |
+| `/help` | command list |
 
-Only the configured `CHAT_ID` may send commands. `AUTO_START=true` (default)
-begins trading on launch; set `AUTO_START=false` to require `/start`.
+Cards posted automatically: 🚀 startup, 🟢 buy, 💰/🔻 sell (PnL, ROI, hold
+time, balance), 🏁 stopped summary. Only the configured `CHAT_ID` may send
+commands. `AUTO_START=true` (default) begins trading on launch; set
+`AUTO_START=false` to require `/start`.
 
 ## Systemd (24/7 VPS)
 

@@ -10,7 +10,6 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-import httpx
 
 LOG_FILE = "bot.log"
 JOURNAL_FILE = "journal.json"
@@ -62,48 +61,3 @@ def append_trade_log(row: dict[str, Any]) -> None:
         if new_file:
             writer.writeheader()
         writer.writerow({k: row.get(k, "") for k in fieldnames})
-
-
-# --- telegram (optional) -----------------------------------------------------
-# Docs: bot_plan/docs/telegram_bot_docs/telegramify_markdown.md
-#   convert(md) -> (text, entities) — entity offsets in UTF-16 units, exactly
-#   what the Bot API wants, so no parse_mode / MarkdownV2 escaping is needed.
-
-try:
-    from telegramify_markdown import convert as _md_convert
-except Exception:  # noqa: BLE001 — telegram is optional; degrade to plain text
-    _md_convert = None
-
-
-class TelegramNotifier:
-    """Telegram notifier via Bot API. No-op unless BOT_TOKEN + CHAT_ID are set."""
-
-    def __init__(self, bot_token: str = "", chat_id: str = ""):
-        self.enabled = bool(bot_token and chat_id)
-        self._token = bot_token
-        self._chat_id = chat_id
-        self._session = httpx.Client(timeout=10)
-
-    async def notify(self, text: str) -> None:
-        """Send a markdown-formatted alert. Plain text when converter missing."""
-        if not self.enabled:
-            return
-        try:
-            payload: dict[str, Any] = {"chat_id": self._chat_id}
-            if _md_convert is not None:
-                text_plain, entities = _md_convert(text)
-                payload["text"] = text_plain[:4000]
-                if entities:
-                    # Telegram's entities are dict-serializable via .to_dict()
-                    payload["entities"] = [e.to_dict() for e in entities]
-            else:
-                payload["text"] = text[:4000]
-            self._session.post(
-                f"https://api.telegram.org/bot{self._token}/sendMessage",
-                json=payload,
-            )
-        except Exception:  # noqa: BLE001 — never let notifications break trading
-            log.exception("Telegram notify failed")
-
-    async def close(self) -> None:
-        self._session.close()

@@ -37,7 +37,7 @@ class FakeMonitor:
 price_monitor.PriceMonitor = FakeMonitor
 
 from bot import execute_trade
-from monitoring import TelegramNotifier
+from telegram_bot import TelegramNotifier
 
 
 def make_launch():

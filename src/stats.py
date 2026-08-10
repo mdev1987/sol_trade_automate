@@ -26,6 +26,8 @@ class TradeStats:
     sell_failures: int = 0
     last_trade: dict = field(default_factory=dict)
     active_position: dict = field(default_factory=dict)
+    exit_counts: dict = field(default_factory=dict)   # reason -> count
+    quote_gate: str = ""                               # jupiter quote summary
 
     def __post_init__(self) -> None:
         if not self.balance_usd:
@@ -60,6 +62,7 @@ class TradeStats:
             self.losses += 1
         self.realized_pnl_usd += pnl_usd
         self.balance_usd += proceeds_usd
+        self.exit_counts[exit_reason] = self.exit_counts.get(exit_reason, 0) + 1
         self.last_trade = {
             "symbol": self.active_position.get("symbol", ""),
             "won": won, "pnl_usd": pnl_usd, "exit_reason": exit_reason,
