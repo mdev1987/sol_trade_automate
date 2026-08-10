@@ -17,3 +17,7 @@ journal.json
 .ruff_cache/
 # runtime lockfile
 .sniper-bot.lock
+
+# replay data (multi-GB, derived) — keep out of git
+bot_plan/parquet/
+bot_plan/downloads/
