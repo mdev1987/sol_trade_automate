@@ -79,13 +79,19 @@ async def process_launch(launch: TokenLaunch) -> Candidate | None:
 
 
 async def scan_loop(queue: asyncio.Queue[Candidate],
-                   gate: Optional[TradeGate] = None) -> None:
+                   gate: Optional[TradeGate] = None,
+                   router: Optional[LaunchFeedRouter] = None) -> None:
     """Run the scanner forever. One scan window = MAX_SCAN_WINDOW minutes.
 
     Pauses when the trade gate is closed (telegram /stop or signal).
+    `router` is shared with the LivePriceFeed (PumpAPI = 1 connection);
+    if None, the scanner owns its own router.
     """
-    stream = LaunchFeedRouter()  # primary pumpapi, fallback pumpdev
+    own_router = router is None
+    stream = router or LaunchFeedRouter()  # primary pumpapi, fallback pumpdev
     try:
+        if own_router:
+            await stream.start()
         while True:
             if gate is not None:
                 await gate.wait()
@@ -109,6 +115,8 @@ async def scan_loop(queue: asyncio.Queue[Candidate],
                     log.info("Scan window expired — starting new cycle")
                     break
     finally:
+        if own_router:
+            await stream.stop()
         log.info("Scanner stopped")
 
 

@@ -26,6 +26,7 @@ import time as _t
 from bot import trade_loop
 from config import settings
 from control import TradeGate
+from data_stream import LaunchFeedRouter
 from live_feed import LivePriceFeed
 from monitoring import setup_logging
 from singleton import SingleInstanceLock
@@ -98,11 +99,15 @@ async def main() -> None:
         if not task.cancelled() and task.exception() is not None:
             log.error("Task %s died: %s", task.get_name(), task.exception())
 
-    # live price feed (PumpAPI buy/sell stream → sub-second TP/SL triggers)
-    live_feed = LivePriceFeed()
+    # ONE PumpAPI connection, shared: scanner (creates) + live feed (trades)
+    router = LaunchFeedRouter()
+    await router.start()
+
+    # live price feed (buy/sell stream on the shared hub → sub-second TP/SL)
+    live_feed = LivePriceFeed(trades=router.trades())
     await live_feed.start()
 
-    scanner_task = asyncio.create_task(scan_loop(queue, gate), name="scanner")
+    scanner_task = asyncio.create_task(scan_loop(queue, gate, router), name="scanner")
     bot_task = asyncio.create_task(
         trade_loop(queue, gate, stats, notifier, live_feed), name="bot")
     heartbeat_task = asyncio.create_task(
@@ -128,6 +133,7 @@ async def main() -> None:
         task.cancel()
     await asyncio.gather(scanner_task, bot_task, heartbeat_task, return_exceptions=True)
     await live_feed.stop()
+    await router.stop()
     await notifier.send_stopped(
         _t.monotonic() - t0, stats.trades, stats.winrate * 100.0,
         stats.realized_pnl_usd, stats.balance_usd, stats.exit_counts,

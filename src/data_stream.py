@@ -2,12 +2,15 @@
 Pump.fun launch feed — PRIMARY: PumpAPI (stream.pumpapi.io), FALLBACK: PumpDev.
 
 - PumpAPI: server pushes ALL events; we filter to `create` events with
-  pool == "pump" (docs: bot_plan/docs/pumpapi_stream_doc.md).
+  pool == "pump" (docs: bot_plan/docs/pumpapi_stream_doc.md). PumpAPI allows
+  ONE websocket connection per client (1008 policy violation otherwise), so
+  the PumpEventHub owns that single connection and fans raw events out to
+  subscribers: create events -> scanner, buy/sell events -> LivePriceFeed.
 - PumpDev: subscribeNewToken; txType == "create"
   (docs: bot_plan/docs/pumpdev_stream_doc.md).
 
-Both are free. The router falls back to PumpDev when PumpAPI keeps failing
-and periodically tries to revive the primary.
+Both are free. The hub falls back to PumpDev when PumpAPI keeps failing and
+periodically tries to revive the primary.
 """
 from __future__ import annotations
 
@@ -22,6 +25,9 @@ import websockets
 from config import settings
 
 log = logging.getLogger("sniper_bot.feed")
+
+SILENCE_TIMEOUT = 180   # seconds without an event before failing over
+REVIVE_INTERVAL = 300   # seconds of fallback before reviving the primary
 
 
 @dataclass
@@ -91,24 +97,22 @@ class TokenLaunch:
 
 
 class PumpApiStream:
-    """Primary feed — wss://stream.pumpapi.io/ (all events, filter client-side)."""
+    """Primary feed — wss://stream.pumpapi.io/ (raw events, no filtering)."""
 
     def __init__(self, url: str = ""):
         self.url = url or settings.pumpapi_ws_url
 
-    async def launches(self) -> AsyncIterator[TokenLaunch]:
+    async def events(self) -> AsyncIterator[dict]:
+        """Yield every raw event (create + buy/sell + control)."""
         while True:
             try:
                 async with websockets.connect(self.url) as ws:
                     log.info("PumpAPI connected: %s", self.url)
                     async for message in ws:
                         try:
-                            ev = json.loads(message)
+                            yield json.loads(message)
                         except json.JSONDecodeError:
                             continue
-                        # filter to new Pump.fun token creations only
-                        if ev.get("action") == "create" and ev.get("pool") == "pump":
-                            yield TokenLaunch.from_event(ev, source="pumpapi")
             except (websockets.ConnectionClosed, OSError) as exc:
                 log.warning("PumpAPI disconnected (%s)", exc)
                 await asyncio.sleep(2.0)
@@ -123,7 +127,8 @@ class PumpDevStream:
         self.url = url or settings.pumpdev_ws_url
         self.api_key = api_key or settings.pump_api_key
 
-    async def launches(self) -> AsyncIterator[TokenLaunch]:
+    async def events(self) -> AsyncIterator[dict]:
+        """Yield raw trade events (control messages filtered out)."""
         delay = 1.0
         while True:
             try:
@@ -140,8 +145,7 @@ class PumpDevStream:
                         if ev.get("type") in ("connected", "subscribed", "error", "notice"):
                             log.info("PumpDev control: %s", ev)
                             continue
-                        if ev.get("txType") == "create":
-                            yield TokenLaunch.from_event(ev, source="pumpdev")
+                        yield ev
             except (websockets.ConnectionClosed, OSError) as exc:
                 log.warning("PumpDev disconnected (%s) — retrying in %.0fs", exc, delay)
                 await asyncio.sleep(delay)
@@ -150,38 +154,67 @@ class PumpDevStream:
                 raise
 
 
-class LaunchFeedRouter:
+class PumpEventHub:
     """
-    PRIMARY PumpAPI -> FALLBACK PumpDev, with silence detection.
+    Owns the ONE allowed PumpAPI connection and fans raw events out to
+    subscribers via per-type queues (create -> scanner, buy/sell -> prices).
 
-    - `wait_for(anext())` on the primary: if no event arrives within
-      SILENCE_TIMEOUT seconds (server silent or connection wedged), we switch
-      to PumpDev.
-    - Fallback runs for at most REVIVE_INTERVAL seconds, then we try to bring
-      the primary back. Successful primary event switches back immediately.
-    - Both streams handle their own reconnects internally.
+    PRIMARY -> FALLBACK failover with silence detection, same as before:
+      - if no event arrives in SILENCE_TIMEOUT seconds, switch to PumpDev;
+      - fallback runs at most REVIVE_INTERVAL seconds, then revive primary;
+      - a successful primary event switches back immediately.
+    Subscribers that lag simply drop events (put_nowait) — a stalled scanner
+    must never wedge the feed.
     """
 
-    SILENCE_TIMEOUT = 180   # seconds without an event before failing over
-    REVIVE_INTERVAL = 300   # seconds of fallback before reviving the primary
-
-    def __init__(self):
+    def __init__(self, creates_size: int = 256, trades_size: int = 8192):
         self.primary = PumpApiStream()
         self.fallback = PumpDevStream()
+        self._creates: asyncio.Queue[dict] = asyncio.Queue(creates_size)
+        self._trades: asyncio.Queue[dict] = asyncio.Queue(trades_size)
+        self._task: asyncio.Task | None = None
 
-    async def launches(self) -> AsyncIterator[TokenLaunch]:
+    async def start(self) -> None:
+        if self._task is None:
+            self._task = asyncio.create_task(self._run(), name="feed-hub")
+            log.info("PumpEventHub started")
+
+    async def stop(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+
+    # ------------------------------------------------------------- dispatch
+    def _dispatch(self, ev: dict) -> None:
+        action = ev.get("action") or ev.get("txType")
+        if action == "create":
+            try:
+                self._creates.put_nowait(ev)
+            except asyncio.QueueFull:
+                log.warning("creates queue full — dropping create event")
+        elif action in ("buy", "sell") and ev.get("pool") == "pump":
+            try:
+                self._trades.put_nowait(ev)
+            except asyncio.QueueFull:
+                pass  # price ticks are disposable; never block the feed
+
+    async def _run(self) -> None:
         while True:
             # --- primary (pumpapi) -----------------------------------------
             try:
-                primary = self.primary.launches()
+                primary = self.primary.events()
                 while True:
-                    launch = await asyncio.wait_for(
-                        primary.__anext__(), timeout=self.SILENCE_TIMEOUT
+                    ev = await asyncio.wait_for(
+                        primary.__anext__(), timeout=SILENCE_TIMEOUT
                     )
-                    yield launch
+                    self._dispatch(ev)
             except asyncio.TimeoutError:
                 log.warning("PumpAPI silent for %ds — switching to PumpDev fallback",
-                            self.SILENCE_TIMEOUT)
+                            SILENCE_TIMEOUT)
             except StopAsyncIteration:
                 pass
             except asyncio.CancelledError:
@@ -192,12 +225,12 @@ class LaunchFeedRouter:
 
             # --- fallback (pumpdev) until primary can be revived ------------
             try:
-                fallback = self.fallback.launches()
+                fallback = self.fallback.events()
                 while True:
-                    launch = await asyncio.wait_for(
-                        fallback.__anext__(), timeout=self.REVIVE_INTERVAL
+                    ev = await asyncio.wait_for(
+                        fallback.__anext__(), timeout=REVIVE_INTERVAL
                     )
-                    yield launch
+                    self._dispatch(ev)
             except asyncio.TimeoutError:
                 log.info("Revive check — trying PumpAPI primary again")
             except StopAsyncIteration:
@@ -207,6 +240,46 @@ class LaunchFeedRouter:
             except Exception as exc:  # noqa: BLE001
                 log.error("PumpDev stream error: %s", exc)
                 await asyncio.sleep(2.0)
+
+    # ---------------------------------------------------------- subscribers
+    async def creates(self) -> AsyncIterator[TokenLaunch]:
+        """Token creations for the scanner (one consumer expected)."""
+        while True:
+            ev = await self._creates.get()
+            source = "pumpapi" if ev.get("action") == "create" else "pumpdev"
+            yield TokenLaunch.from_event(ev, source=source)
+
+    async def trades(self) -> AsyncIterator[tuple[str, float]]:
+        """(mint, price_sol) buy/sell events for the live price feed."""
+        while True:
+            ev = await self._trades.get()
+            mint = ev.get("mint")
+            price = ev.get("price")
+            if mint and isinstance(price, (int, float)) and price > 0:
+                yield mint, float(price)
+
+
+class LaunchFeedRouter:
+    """Backwards-compatible facade: one PumpEventHub shared by all consumers.
+
+    The scanner and the LivePriceFeed must share the SAME router (PumpAPI
+    allows only one connection per client).
+    """
+
+    def __init__(self):
+        self.hub = PumpEventHub()
+
+    async def start(self) -> None:
+        await self.hub.start()
+
+    async def stop(self) -> None:
+        await self.hub.stop()
+
+    def launches(self) -> AsyncIterator[TokenLaunch]:
+        return self.hub.creates()
+
+    def trades(self) -> AsyncIterator[tuple[str, float]]:
+        return self.hub.trades()
 
 
 # backwards-compatible alias used by the scanner

@@ -32,10 +32,16 @@ RECONNECT_MAX_S = 30.0
 
 
 class LivePriceFeed:
-    """Background task: keep {mint: (price_sol, ts)} fresh from PumpAPI."""
+    """Background task: keep {mint: (price_sol, ts)} fresh from buy/sell events.
 
-    def __init__(self, url: str | None = None) -> None:
+    Consumes the shared PumpEventHub trades stream by default (PumpAPI allows
+    only ONE websocket per client — the scanner owns it). A standalone
+    `url` starts its own connection instead (for scripts/tests).
+    """
+
+    def __init__(self, url: str | None = None, trades=None) -> None:
         self.url = url or settings.pumpapi_ws_url
+        self._trades = trades           # async iterator of (mint, price_sol)
         self._prices: dict[str, tuple[float, float]] = {}
         self._sol_usd: float | None = None
         self._sol_usd_ts = 0.0
@@ -46,7 +52,7 @@ class LivePriceFeed:
     async def start(self) -> None:
         if self._task is None:
             self._task = asyncio.create_task(self._run(), name="live-feed")
-            log.info("LivePriceFeed started (%s)", self.url)
+            log.info("LivePriceFeed started (shared hub=%s)", self._trades is not None)
 
     async def stop(self) -> None:
         if self._task is not None:
@@ -60,6 +66,29 @@ class LivePriceFeed:
 
     # ------------------------------------------------------------------ loop
     async def _run(self) -> None:
+        if self._trades is not None:
+            await self._consume(self._trades)
+        else:
+            await self._run_own_connection()
+
+    async def _consume(self, trades) -> None:
+        """Consume (mint, price_sol) tuples from the shared hub."""
+        delay = RECONNECT_BASE_S
+        while True:
+            try:
+                async for mint, price in trades:
+                    self._prices[mint] = (float(price), time.monotonic())
+                    self._prune()
+                delay = RECONNECT_BASE_S
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — keep the feed alive
+                log.warning("LivePriceFeed stream error (%s) — retry in %.0fs", exc, delay)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, RECONNECT_MAX_S)
+
+    async def _run_own_connection(self) -> None:
+        """Standalone mode: own websocket to PumpAPI (only for scripts/tests)."""
         delay = RECONNECT_BASE_S
         while True:
             try:
@@ -88,6 +117,13 @@ class LivePriceFeed:
                 log.exception("LivePriceFeed error")
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, RECONNECT_MAX_S)
+
+    def _prune(self, max_age_s: float = 120.0) -> None:
+        """Drop stale mints so the dict doesn't grow forever (~250/min live)."""
+        if len(self._prices) < 500:
+            return
+        cutoff = time.monotonic() - max_age_s
+        self._prices = {m: v for m, v in self._prices.items() if v[1] >= cutoff}
 
     # --------------------------------------------------------------- queries
     def price_sol(self, mint: str, max_age_s: float = PRICE_MAX_AGE_S) -> float | None:
