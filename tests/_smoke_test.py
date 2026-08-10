@@ -209,4 +209,32 @@ sig3 = asyncio.run(_stale_case(last_age=None, feed_age=10.0, grace=0.0))
 assert not sig3.exit, "feed reconnected -> no false exit"
 print("[OK] dead-token exit (no_trades: stale->exit, recent->hold, reconnect->hold)")
 
+# 10) monitor network resilience — a failing DexScreener/Jupiter must NOT raise
+class FakeDSExplodes:
+    async def token_pairs(self, mint):
+        raise ConnectionError("DNS blip")
+
+class FakeJupExplodes:
+    async def price_usd(self, mint):
+        raise ConnectionError("DNS blip")
+
+class FakeLiveQuiet:
+    async def price_usd(self, mint, max_age_s=10.0):
+        return None
+    def last_trade_age(self, mint):
+        return 5.0  # recently traded -> not stale
+    def feed_age(self):
+        return 300.0
+
+async def _resilience_case():
+    mon = pm_mod.PriceMonitor(FakeDSExplodes(), FakeJupExplodes(),
+                              entry_price_usd=1e-6, mint="BlipMint",
+                              live_feed=FakeLiveQuiet())
+    sig = await mon.check()  # must not raise
+    return sig
+
+sig = asyncio.run(_resilience_case())
+assert not sig.exit, "network failure -> keep holding, no crash"
+print("[OK] monitor network resilience (DNS failure -> hold, no crash)")
+
 print("\\nALL SMOKE TESTS PASSED")

@@ -62,8 +62,13 @@ class PriceMonitor:
         self._seen_pair = False  # a DexScreener pair ever appeared?
 
     async def current_pair(self) -> Pair | None:
-        pairs = await self.ds.token_pairs(self.mint)
-        return self.ds.pick_pair(pairs)
+        """Best-effort DexScreener lookup — a network failure returns None."""
+        try:
+            pairs = await self.ds.token_pairs(self.mint)
+            return self.ds.pick_pair(pairs)
+        except Exception as exc:  # noqa: BLE001 — monitor must survive outages
+            log.warning("DexScreener lookup failed for %s: %s", self.mint[:8], exc)
+            return None
 
     def _evaluate(self, price_usd: float, liquidity_usd: float | None) -> ExitSignal:
         """TP / SL / dead-pool / max-hold evaluation on the best known price."""
@@ -93,9 +98,12 @@ class PriceMonitor:
                     price_usd = pair.price_usd
         liquidity = self._cached_liq
         if price_usd is None:
-            price_usd = await self.jupiter.price_usd(self.mint)
-            if price_usd is not None:
-                log.info("DexScreener/live miss — Jupiter fallback price: %s", price_usd)
+            try:
+                price_usd = await self.jupiter.price_usd(self.mint)
+                if price_usd is not None:
+                    log.info("DexScreener/live miss — Jupiter fallback price: %s", price_usd)
+            except Exception as exc:  # noqa: BLE001 — never crash the monitor
+                log.warning("Jupiter price lookup failed for %s: %s", self.mint[:8], exc)
         if self._stale_dead():
             log.info("No live trades for %s — treating as dead (exit)", self.mint[:8])
             return ExitSignal(True, "no_trades", price_usd, liquidity)
@@ -145,7 +153,10 @@ class PriceMonitor:
                 if self.live_feed is not None:
                     last_price = await self.live_feed.price_usd(self.mint)
                 if last_price is None:
-                    last_price = await self.jupiter.price_usd(self.mint)
+                    try:
+                        last_price = await self.jupiter.price_usd(self.mint)
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("Jupiter price failed at shutdown: %s", exc)
                 if last_price is None:
                     pair = await self.current_pair()  # last resort: DexScreener
                     if pair is not None:

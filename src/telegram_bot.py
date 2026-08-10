@@ -324,20 +324,34 @@ class TelegramNotifier:
 
     # -------------------------------------------------------------- polling
     async def start_polling(self) -> None:
-        """Build the PTB Application and start getUpdates long-polling."""
+        """Build the PTB Application and start getUpdates long-polling.
+
+        Telegram is the control plane, not the trading path: transient
+        network/DNS failures must never kill the bot, so the init sequence
+        retries with backoff and gives up gracefully (trading continues).
+        """
         if not self._enabled or self._bot is None:
             log.info("Telegram disabled — command bot inactive")
             return
-        app = Application.builder().bot(self._bot).build()
-        app.add_handler(CommandHandler("start", self._cmd_start))
-        app.add_handler(CommandHandler("stop", self._cmd_stop))
-        app.add_handler(CommandHandler("status", self._cmd_status))
-        app.add_handler(CommandHandler("help", self._cmd_help))
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling(allowed_updates=["message"], drop_pending_updates=True)
-        self._application = app
-        log.info("Telegram command bot polling (chat %s)", self._chat_id)
+        for attempt in range(3):
+            try:
+                app = Application.builder().bot(self._bot).build()
+                app.add_handler(CommandHandler("start", self._cmd_start))
+                app.add_handler(CommandHandler("stop", self._cmd_stop))
+                app.add_handler(CommandHandler("status", self._cmd_status))
+                app.add_handler(CommandHandler("help", self._cmd_help))
+                await app.initialize()
+                await app.start()
+                await app.updater.start_polling(
+                    allowed_updates=["message"], drop_pending_updates=True)
+                self._application = app
+                log.info("Telegram command bot polling (chat %s)", self._chat_id)
+                return
+            except Exception as exc:  # noqa: BLE001 — control plane only
+                log.warning("Telegram start_polling failed (attempt %d/3): %s",
+                            attempt + 1, exc)
+                await asyncio.sleep(3.0 * (attempt + 1))
+        log.error("Telegram command bot unavailable — trading continues without it")
 
     async def stop_polling(self) -> None:
         if self._application is not None:

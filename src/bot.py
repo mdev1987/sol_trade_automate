@@ -29,7 +29,7 @@ from dexscreener import DexScreenerClient
 from jupiter_swap import JupiterSwap, SwapResult
 from live_feed import LivePriceFeed
 from monitoring import append_journal, append_trade_log
-from price_monitor import PriceMonitor
+from price_monitor import ExitSignal, PriceMonitor
 from risk_management import RiskManager
 from stats import TradeStats
 from telegram_bot import TelegramNotifier
@@ -204,7 +204,24 @@ async def execute_trade(
             amount,
             stats.balance_usd,
         )
-    signal = await monitor.run_until_exit()
+    try:
+        signal = await monitor.run_until_exit()
+    except Exception as exc:  # noqa: BLE001 — never lose a position's accounting
+        log.exception("Monitor crashed for %s — emergency exit at last price",
+                      candidate.launch.symbol)
+        last_price = None
+        if live_feed is not None:
+            try:
+                last_price = await live_feed.price_usd(mint)
+            except Exception:  # noqa: BLE001
+                pass
+        if last_price is None:
+            last_price = await jupiter.price_usd(mint)  # already None-safe
+        signal = ExitSignal(True, "error", last_price, None)
+        try:
+            await notifier.send_alert("MONITOR CRASH", f"{candidate.launch.symbol} — emergency exit")
+        except Exception:  # noqa: BLE001
+            pass
     log.info("EXIT SIGNAL: %s @ $%s", signal.reason, signal.price_usd)
 
     # 3) SELL via Jupiter (slippage escalation 200→300→500→1000)
