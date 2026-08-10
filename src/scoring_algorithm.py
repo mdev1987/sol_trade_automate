@@ -75,3 +75,55 @@ def score_token(launch: TokenLaunch, pair: Pair) -> float:
         + score_liquidity(pair),
         1,
     )
+
+
+def score_feed(launch: TokenLaunch) -> float:
+    """Provisional feed-only score (0-80) for the feed-data entry path.
+
+    Used when the DexScreener pair isn't indexed yet, so volume/liquidity
+    are proxied from the create event: dev buy SOL, initial-buy share of
+    supply, and market-cap-in-SOL. Same 80-point scale as score_token.
+    """
+    dev = launch.dev_sol if launch.dev_sol is not None else 0.0
+    supply_raw = launch.raw.get("supply")
+    supply = float(supply_raw) if supply_raw and float(supply_raw) > 0 else None
+    share = (
+        launch.initial_buy_tokens / supply
+        if supply is not None and launch.initial_buy_tokens > 0
+        else None
+    )
+
+    s = 0.0
+    s += 10.0                       # freshness: at-launch entry
+    s += score_fair_launch(launch)  # 0-10 dev fairness
+
+    # volume proxy (25): meaningful-but-not-whale initial buy = full points
+    if share is None:
+        s += 15.0
+    elif 0.0005 <= share <= 0.05:
+        s += 25.0
+    elif share < 0.0005:
+        s += 12.0
+    else:
+        s += 5.0
+
+    # mcap positioning (15): low-mid mcap = room to run
+    mcap = launch.market_cap_sol if launch.market_cap_sol is not None else 0.0
+    if 0.0 < mcap <= 200.0:
+        s += 15.0
+    elif mcap <= 800.0:
+        s += 10.0
+    elif mcap <= 3000.0:
+        s += 5.0
+
+    # buy pressure proxy (20): smaller dev buy = more room for real buyers
+    if dev <= 0.5:
+        s += 20.0
+    elif dev <= 1.0:
+        s += 15.0
+    elif dev <= 2.0:
+        s += 10.0
+    elif dev <= 3.0:
+        s += 5.0
+
+    return round(min(s, 80.0), 1)

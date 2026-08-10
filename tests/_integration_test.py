@@ -26,6 +26,7 @@ class FakeMonitor:
     exit_signal = "take_profit"
     take_profit_price = 0.0002
     stop_loss_price = 0.000082
+    live_feed = None  # hardening v2: bot reads monitor.live_feed for logging
 
     def __init__(self, *a, **k):
         pass
@@ -131,6 +132,18 @@ async def main():
                                         TradeStats(dry_run=True))
     assert not won3 and reason3 == "buy_failed", (won3, reason3)
     print("[OK] buy-failure path aborts cleanly")
+
+    # --- daily loss kill switch (hardening v2) ---
+    s4 = TradeStats(dry_run=True)
+    s4.daily_pnl_usd = -9.5
+    assert not s4.daily_loss_limit_hit(), "should NOT halt above the limit"
+    s4.daily_pnl_usd = -10.0
+    assert s4.daily_loss_limit_hit(), "should halt at exactly -10"
+    s5 = TradeStats(dry_run=True)
+    s5.record_exit(False, -2.0, 0.0, "stop_loss", 0.00008)
+    assert s5.daily_pnl_usd == -2.0 and s5.day_key, "daily pnl tracking"
+    assert s5.next_day_reset_seconds() > 0, "UTC midnight reset"
+    print("[OK] daily-loss kill switch + daily pnl tracking")
 
     print("\nINTEGRATION TEST PASSED")
 

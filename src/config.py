@@ -113,6 +113,23 @@ class Settings:
     reinvest_ratio: float = field(
         default_factory=lambda: _get_float("REINVEST_RATIO", 0.60)
     )
+    # daily loss kill switch: halt trading until next UTC day when daily
+    # realized PnL <= -DAILY_LOSS_LIMIT (0 = disabled)
+    daily_loss_limit: float = field(
+        default_factory=lambda: _get_float("DAILY_LOSS_LIMIT", 10.0)
+    )
+
+    # --- exits / monitoring ---
+    # max hold time before a position is force-exited (stuck-position watchdog)
+    max_hold_min: float = field(default_factory=lambda: _get_float("MAX_HOLD_MIN", 30.0))
+    # use the PumpAPI buy/sell stream for sub-second TP/SL triggers
+    live_feed_exit: bool = field(default_factory=lambda: _get_bool("LIVE_FEED_EXIT", True))
+    # minimum feed score for a launch to be queued (feed-data entry path)
+    min_score: float = field(default_factory=lambda: _get_float("MIN_SCORE", 40.0))
+    # periodic /status heartbeat card interval (minutes; 0 = disabled)
+    status_interval_min: int = field(
+        default_factory=lambda: _get_int("STATUS_INTERVAL_MIN", 15)
+    )
 
     # --- mode ---
     dry_run: bool = field(default_factory=lambda: _get_bool("DRY_RUN", True))

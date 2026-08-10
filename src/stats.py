@@ -7,9 +7,14 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from config import settings
+
+
+def _utc_day() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 @dataclass
@@ -28,6 +33,10 @@ class TradeStats:
     active_position: dict = field(default_factory=dict)
     exit_counts: dict = field(default_factory=dict)   # reason -> count
     quote_gate: str = ""                               # jupiter quote summary
+
+    # daily PnL tracking (UTC day) for the daily-loss kill switch
+    day_key: str = field(default_factory=_utc_day)
+    daily_pnl_usd: float = 0.0
 
     def __post_init__(self) -> None:
         if not self.balance_usd:
@@ -55,12 +64,17 @@ class TradeStats:
     def record_exit(self, won: bool, pnl_usd: float, proceeds_usd: float,
                     exit_reason: str, exit_price: float, signature: str = "") -> None:
         """Credit proceeds, update win/loss counters and the PnL total."""
+        today = _utc_day()
+        if today != self.day_key:
+            self.day_key = today
+            self.daily_pnl_usd = 0.0
         self.trades += 1
         if won:
             self.wins += 1
         else:
             self.losses += 1
         self.realized_pnl_usd += pnl_usd
+        self.daily_pnl_usd += pnl_usd
         self.balance_usd += proceeds_usd
         self.exit_counts[exit_reason] = self.exit_counts.get(exit_reason, 0) + 1
         self.last_trade = {
@@ -77,6 +91,20 @@ class TradeStats:
     def record_sell_failure(self, symbol: str, error: str) -> None:
         self.sell_failures += 1
         self.last_trade = {"symbol": symbol, "won": False, "error": error}
+
+    # ------------------------------------------------- daily-loss kill switch
+    def daily_loss_limit_hit(self) -> bool:
+        """True when the daily realized PnL <= -DAILY_LOSS_LIMIT (0 = disabled)."""
+        limit = getattr(settings, "daily_loss_limit", 0.0)
+        return limit > 0 and self.daily_pnl_usd <= -abs(limit)
+
+    def next_day_reset_seconds(self) -> float:
+        """Seconds until UTC midnight (day rollover that resets daily PnL)."""
+        now = datetime.now(timezone.utc)
+        tomorrow = (now + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        return max(0.0, (tomorrow - now).total_seconds())
 
     # ---------------------------------------------------------------- helpers
     def _fmt_usd(self, v: float) -> str:
@@ -100,6 +128,7 @@ class TradeStats:
             f"📈 Trades: `{self.trades}`  (✅ `{self.wins}` / ❌ `{self.losses}`)",
             f"🎯 Winrate: `{self.winrate * 100:.1f}%`",
             f"💵 Realized PnL: `{self._fmt_usd(self.realized_pnl_usd)}`",
+            f"📅 Today: `{self._fmt_usd(self.daily_pnl_usd)}`",
             f"⚠️ Buy fails: `{self.buy_failures}` · Sell fails: `{self.sell_failures}`",
             f"⏱ Uptime: `{self._uptime()}`",
         ]

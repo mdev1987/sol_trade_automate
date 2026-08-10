@@ -3,6 +3,12 @@ main.py — run scanner + bot + telegram command bot together (the full system).
 
     Detect → validate → score → buy → monitor → sell → compound. Repeat 24/7.
 
+Hardening (v2):
+  - Single-instance lock: a second `main.py` exits immediately (flock).
+  - LivePriceFeed: PumpAPI buy/sell stream for sub-second TP/SL triggers.
+  - Heartbeat: periodic /status card every STATUS_INTERVAL_MIN (watchdog).
+  - Feed-data entry: scanner no longer waits for DexScreener to index.
+
 Control:
   - SIGINT/SIGTERM or Telegram /stop → graceful shutdown: the gate closes,
     the in-flight trade finishes, clients close, process exits 0.
@@ -14,12 +20,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+import sys
 import time as _t
 
 from bot import trade_loop
 from config import settings
 from control import TradeGate
+from live_feed import LivePriceFeed
 from monitoring import setup_logging
+from singleton import SingleInstanceLock
 from stats import TradeStats
 from telegram_bot import build_telegram_bot
 from token_scanner import Candidate, scan_loop
@@ -28,6 +37,26 @@ log = setup_logging()
 
 # how long we wait for an in-flight trade to finish before hard-cancelling
 GRACEFUL_TRADE_TIMEOUT_S = 90
+
+
+async def heartbeat_loop(notifier, stats, t0) -> None:
+    """Periodic /status card — if this goes silent, the bot is stuck/dead."""
+    interval = settings.status_interval_min * 60
+    if interval <= 0:
+        return
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await notifier.send_status(
+                _t.monotonic() - t0, stats.trades, stats.winrate * 100.0,
+                stats.realized_pnl_usd, stats.balance_usd, stats.exit_counts,
+                quotes=stats.quote_gate,
+            )
+            log.info("Heartbeat status card sent")
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — a failed card must not kill main
+            log.exception("Heartbeat card failed")
 
 
 async def main() -> None:
@@ -69,15 +98,22 @@ async def main() -> None:
         if not task.cancelled() and task.exception() is not None:
             log.error("Task %s died: %s", task.get_name(), task.exception())
 
+    # live price feed (PumpAPI buy/sell stream → sub-second TP/SL triggers)
+    live_feed = LivePriceFeed()
+    await live_feed.start()
+
     scanner_task = asyncio.create_task(scan_loop(queue, gate), name="scanner")
-    bot_task = asyncio.create_task(trade_loop(queue, gate, stats, notifier), name="bot")
-    for t in (scanner_task, bot_task):
+    bot_task = asyncio.create_task(
+        trade_loop(queue, gate, stats, notifier, live_feed), name="bot")
+    heartbeat_task = asyncio.create_task(
+        heartbeat_loop(notifier, stats, t0), name="heartbeat")
+    for t in (scanner_task, bot_task, heartbeat_task):
         t.add_done_callback(_log_task_error)
 
     await notifier.send_startup(
         f"AUTO_START=`{settings.auto_start}` · DRY_RUN=`{settings.dry_run}` "
         f"· play `${settings.starting_amount:g}` USDC · TP `{settings.take_profit:g}x` "
-        f"SL `{settings.stop_loss:g}x`"
+        f"SL `{settings.stop_loss:g}x` · daily cap `-${settings.daily_loss_limit:g}`"
     )
 
     await stop.wait()
@@ -88,9 +124,10 @@ async def main() -> None:
         await asyncio.wait_for(bot_task, timeout=GRACEFUL_TRADE_TIMEOUT_S)
     except asyncio.TimeoutError:
         log.warning("In-flight trade exceeded %ds — cancelling", GRACEFUL_TRADE_TIMEOUT_S)
-    for task in (scanner_task, bot_task):
+    for task in (scanner_task, bot_task, heartbeat_task):
         task.cancel()
-    await asyncio.gather(scanner_task, bot_task, return_exceptions=True)
+    await asyncio.gather(scanner_task, bot_task, heartbeat_task, return_exceptions=True)
+    await live_feed.stop()
     await notifier.send_stopped(
         _t.monotonic() - t0, stats.trades, stats.winrate * 100.0,
         stats.realized_pnl_usd, stats.balance_usd, stats.exit_counts,
@@ -102,4 +139,11 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    lock = SingleInstanceLock()
+    if not lock.acquire():
+        log.error("Another bot instance is already running (%s) — exiting", lock.path)
+        sys.exit(1)
+    try:
+        asyncio.run(main())
+    finally:
+        lock.release()

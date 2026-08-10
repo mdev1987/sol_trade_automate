@@ -3,8 +3,13 @@ bot.py — consume validated candidates, buy via Jupiter, monitor price, sell,
 then apply the compounding split and risk management.
 
 Flow: buy (Jupiter /order + /execute via jupiter_swap.JupiterSwap) → monitor
-      (8s DexScreener poll) → sell (2x TP / 0.82x SL / dead pool, slippage
-      escalation 200→300→500→1000) → 60/40 split → update TradeStats.
+      (live PumpAPI price + 8s DexScreener liquidity poll) → sell (2x TP /
+      0.82x SL / dead pool / max hold, slippage escalation 200→300→500→1000)
+      → 60/40 split → update TradeStats.
+
+Entry: feed-data path — the buy is attempted the moment a launch passes feed
+validation (no 25s DexScreener wait). The entry price is the real fill price
+when token decimals are known, else DexScreener / Jupiter / live-feed price.
 
 Dry-run: the quote gate still runs against Jupiter's real /order API
 (paper quoting — no taker, so Jupiter returns a verified route but never a
@@ -15,12 +20,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import time as _t
+from datetime import datetime, timezone
 from typing import Optional
 
 from config import settings, USDC_DECIMALS
 from control import TradeGate
 from dexscreener import DexScreenerClient
 from jupiter_swap import JupiterSwap, SwapResult
+from live_feed import LivePriceFeed
 from monitoring import append_journal, append_trade_log
 from price_monitor import PriceMonitor
 from risk_management import RiskManager
@@ -38,10 +45,42 @@ _DRY_PROCEEDS = {"take_profit": lambda s: s.take_profit,
                  "dead_pool": lambda s: 0.0}
 
 
+async def _estimate_entry_price(mint: str, launch, jupiter: JupiterSwap,
+                                ds: DexScreenerClient, live_feed: LivePriceFeed | None,
+                                pair) -> tuple[float | None, float]:
+    """Best available USD price before/without a fill: pair > jupiter > live > feed-SOL.
+
+    Returns (price_usd, liquidity_usd).
+    """
+    price = pair.price_usd if pair else None
+    liquidity = pair.liquidity_usd if pair else 0.0
+    if price is None:
+        price = await jupiter.price_usd(mint)
+    if price is None and live_feed is not None:
+        price = await live_feed.price_usd(mint)
+    if price is None:
+        raw_price = launch.raw.get("price")
+        if raw_price and live_feed is not None:
+            sol = await live_feed.sol_usd()
+            if sol:
+                price = float(raw_price) * sol
+    return price, liquidity
+
+
+async def _quick_pair(ds: DexScreenerClient, mint: str):
+    """One best-effort DexScreener lookup (pair may not be indexed yet)."""
+    try:
+        pairs = await ds.token_pairs(mint)
+        return ds.pick_pair(pairs)
+    except Exception:  # noqa: BLE001 — never block the entry on this
+        return None
+
+
 async def execute_trade(candidate: Candidate, risk: RiskManager,
                         jupiter: JupiterSwap, ds: DexScreenerClient,
                         notifier: TelegramNotifier,
-                        stats: Optional[TradeStats] = None) -> tuple[bool, str]:
+                        stats: Optional[TradeStats] = None,
+                        live_feed: Optional[LivePriceFeed] = None) -> tuple[bool, str]:
     """One full trade cycle. Returns (won, exit_reason)."""
     amount = risk.play_amount
     mint = candidate.launch.mint
@@ -49,18 +88,17 @@ async def execute_trade(candidate: Candidate, risk: RiskManager,
     log.info("=== TRADE %s — buying $%.2f of %s (score %.1f) ===",
              candidate.launch.symbol, amount, mint[:8], candidate.score)
 
-    # entry price + liquidity before the buy — liquidity drives the quote
-    # gate's dynamic slippage tier.
-    pair = ds.pick_pair(await ds.token_pairs(mint))
-    entry_price = pair.price_usd if pair else await jupiter.price_usd(mint)
-    if entry_price is None:
+    # --- entry price estimate BEFORE the buy (fast, one DexScreener call) ---
+    pair = await _quick_pair(ds, mint)
+    entry_price, liquidity_usd = await _estimate_entry_price(
+        mint, candidate.launch, jupiter, ds, live_feed, pair)
+    if entry_price is None or entry_price <= 0:
         log.error("No entry price for %s — aborting trade", candidate.launch.symbol)
         append_journal({"type": "trade", "mint": mint, "symbol": candidate.launch.symbol,
                         "side": "buy", "status": "failed", "error": "no_entry_price"})
         if stats:
             stats.record_buy_failure(candidate.launch.symbol, "no_entry_price")
         return False, "no_entry_price"
-    liquidity_usd = pair.liquidity_usd if pair else 0.0
 
     # 1) BUY via Jupiter (quote gate + managed execute)
     buy_result: SwapResult = await jupiter.buy(mint, amount, liquidity_usd)
@@ -81,12 +119,20 @@ async def execute_trade(candidate: Candidate, risk: RiskManager,
             return False, "buy_failed"
     else:
         tokens_raw = buy_result.output_amount
+        # refine entry price from the REAL fill when token decimals are known
+        decimals = candidate.launch.raw.get("decimals")
+        if decimals is not None and tokens_raw > 0:
+            fill_price = (buy_result.input_amount / 10**USDC_DECIMALS) / (tokens_raw / 10**int(decimals))
+            if fill_price > 0:
+                entry_price = fill_price
+                log.info("Fill-based entry price: $%.8f", entry_price)
 
-    # 2) MONITOR until exit
-    monitor = PriceMonitor(ds, jupiter, entry_price, mint)
-    log.info("Entry $%.8f — TP $%.8f / SL $%.8f — monitoring every %ds",
+    # 2) MONITOR until exit (live feed for sub-second TP/SL, DexScreener liq)
+    monitor = PriceMonitor(ds, jupiter, entry_price, mint,
+                           live_feed=live_feed if settings.live_feed_exit else None)
+    log.info("Entry $%.8f — TP $%.8f / SL $%.8f — monitoring (live feed %s)",
              entry_price, monitor.take_profit_price, monitor.stop_loss_price,
-             settings.poll_interval)
+             "on" if monitor.live_feed else "off")
     if stats:
         stats.record_buy(mint, candidate.launch.symbol, amount, entry_price,
                          monitor.take_profit_price, monitor.stop_loss_price)
@@ -112,6 +158,10 @@ async def execute_trade(candidate: Candidate, risk: RiskManager,
                             "side": "sell", "status": "failed", "error": str(exc)})
             if stats:
                 stats.record_sell_failure(candidate.launch.symbol, str(exc))
+            try:
+                await notifier.send_alert("SELL FAILED", f"{candidate.launch.symbol} — {exc}")
+            except Exception:  # noqa: BLE001
+                pass
             return False, "sell_failed"
 
     won = signal.reason == "take_profit" and sell_result.success
@@ -156,14 +206,37 @@ async def execute_trade(candidate: Candidate, risk: RiskManager,
     return won, exit_reason
 
 
+async def _wait_daily_reset(stats: TradeStats, gate: TradeGate,
+                            notifier: TelegramNotifier) -> None:
+    """Daily-loss kill switch: alert once, then idle until UTC midnight."""
+    log.warning("DAILY LOSS LIMIT HIT (today %.2f) — halted until UTC midnight",
+                stats.daily_pnl_usd)
+    try:
+        await notifier.send_alert("DAILY LOSS LIMIT",
+                                  f"Today {stats.daily_pnl_usd:+.2f} — halted until UTC midnight")
+    except Exception:  # noqa: BLE001
+        pass
+    while not gate.shutdown:
+        wait = stats.next_day_reset_seconds()
+        if wait <= 0:
+            return
+        try:
+            await asyncio.wait_for(asyncio.sleep(wait), timeout=60.0)
+        except asyncio.TimeoutError:
+            continue  # re-check shutdown + recalculate
+    if gate.shutdown:
+        log.info("Gate shutdown during daily halt — exiting")
+
+
 async def trade_loop(queue: asyncio.Queue[Candidate], gate: TradeGate,
                      stats: Optional[TradeStats] = None,
-                     notifier: Optional[TelegramCommandBot] = None) -> None:
+                     notifier: Optional[TelegramNotifier] = None,
+                     live_feed: Optional[LivePriceFeed] = None) -> None:
     """Consume validated candidates forever, one trade at a time.
 
     - pauses when the gate is closed (telegram /stop or signal);
     - an in-flight trade always runs to completion (graceful);
-    - loss-pause circuit breaker from RiskManager still applies.
+    - loss-pause circuit breaker and daily-loss kill switch apply.
     """
     jupiter = JupiterSwap()
     ds = DexScreenerClient()
@@ -177,12 +250,16 @@ async def trade_loop(queue: asyncio.Queue[Candidate], gate: TradeGate,
             if gate.shutdown:
                 log.info("Gate shutdown — trade loop exiting")
                 break
+            if stats is not None and stats.daily_loss_limit_hit():
+                await _wait_daily_reset(stats, gate, notifier)
+                if gate.shutdown:
+                    break
             await _wait_risk_paused(risk, gate)  # loss-pause breaker, shutdown-aware
             candidate = await _queue_get(queue, gate)
             if candidate is None:
                 break  # shutdown while waiting for a candidate
             try:
-                await execute_trade(candidate, risk, jupiter, ds, notifier, stats)
+                await execute_trade(candidate, risk, jupiter, ds, notifier, stats, live_feed)
                 if stats is not None:
                     stats.quote_gate = jupiter.quote_summary()
             except Exception:  # noqa: BLE001 — one bad trade must not kill the loop
