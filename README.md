@@ -48,6 +48,16 @@ Required to go live (`DRY_RUN=false`):
 | `JUPITER_API_KEY` | free at https://developers.jup.ag/portal (FREE tier = 1 RPS) |
 | `BOT_TOKEN` / `CHAT_ID` | Telegram control + alerts (BotFather) |
 
+Hardening v2 (all optional, sane defaults):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DAILY_LOSS_LIMIT` | `10` | halt trading until UTC midnight when daily realized PnL ≤ −limit (`0` = off) |
+| `STATUS_INTERVAL_MIN` | `15` | periodic `/status` heartbeat card (`0` = off) |
+| `MAX_HOLD_MIN` | `30` | force-exit a position held this long (stuck-position watchdog) |
+| `LIVE_FEED_EXIT` | `true` | PumpAPI buy/sell stream → sub-second TP/SL triggers (shares the scanner's single connection) |
+| `MIN_SCORE` | `40` | minimum feed score for a launch to be queued (feed-data entry path) |
+
 Optional: `SOLANA_RPC_URL` (Helius/Alchemy, optional reads only), `PUMPDEV_API_KEY`.
 
 ## Run
