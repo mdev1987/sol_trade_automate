@@ -2,6 +2,7 @@
 Filter thresholds — tokens must pass all of these after rug checks.
 (bot_plan/sample_bot/scanner_filter.py)
 """
+
 from __future__ import annotations
 
 import time
@@ -13,7 +14,7 @@ from dexscreener import Pair
 
 @dataclass
 class Thresholds:
-    max_age_minutes: float = 5.0          # older = easy gains gone
+    max_age_minutes: float = 5.0  # older = easy gains gone
     min_liquidity_usd: float = 2_000.0
     max_liquidity_usd: float = 500_000.0
     min_volume_5m: float = 500.0
@@ -30,12 +31,15 @@ class FeedThresholds:
     Used by the feed-data entry path — the bot buys the moment a launch is
     validated instead of waiting for DexScreener to index the pair.
     """
-    max_dev_sol: float = 3.0              # dev bought > 3 SOL = dump risk
-    require_initial_buy: bool = True      # a dev with no buy = no skin in game
-    max_mcap_sol: float = 50_000.0        # loose cap (~$7.5M @ $150/SOL)
+
+    max_dev_sol: float = 3.0  # dev bought > 3 SOL = dump risk
+    require_initial_buy: bool = True  # a dev with no buy = no skin in game
+    max_mcap_sol: float = 50_000.0  # loose cap (~$7.5M @ $150/SOL)
 
 
-def passes_feed_filters(launch: TokenLaunch, t: FeedThresholds | None = None) -> tuple[bool, list[str]]:
+def passes_feed_filters(
+    launch: TokenLaunch, t: FeedThresholds | None = None
+) -> tuple[bool, list[str]]:
     """Feed-only validation: dev dump cap, initial buy, metadata, mcap cap."""
     t = t or FeedThresholds()
     failures: list[str] = []
@@ -65,7 +69,9 @@ def age_minutes(pair: Pair) -> float | None:
     return (time.time() * 1000 - pair.pair_created_at) / 60_000.0
 
 
-def passes_filters(launch: TokenLaunch, pair: Pair, t: Thresholds | None = None) -> tuple[bool, list[str]]:
+def passes_filters(
+    launch: TokenLaunch, pair: Pair, t: Thresholds | None = None
+) -> tuple[bool, list[str]]:
     """Return (passed, failed_reasons). Fails on the first unmet threshold."""
     t = t or Thresholds()
     failures: list[str] = []

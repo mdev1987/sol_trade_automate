@@ -2,6 +2,7 @@
 Risk management — play floor, loss pause, dead-pool backoff.
 (bot_plan/sample_bot/risk_management.py)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -44,7 +45,9 @@ class RiskManager:
 
         if won:
             self.consecutive_losses = 0
-            self.play_amount = next_play_amount(self.play_amount, won=True, exit_reason="take_profit")
+            self.play_amount = next_play_amount(
+                self.play_amount, won=True, exit_reason="take_profit"
+            )
         else:
             self.consecutive_losses += 1
             self.play_amount = next_play_amount(self.play_amount, won=False, exit_reason="loss")
@@ -52,7 +55,8 @@ class RiskManager:
                 self.paused_until = time.monotonic() + settings.loss_pause_minutes * 60
                 log.warning(
                     "%d consecutive losses — pausing %d min",
-                    self.consecutive_losses, settings.loss_pause_minutes,
+                    self.consecutive_losses,
+                    settings.loss_pause_minutes,
                 )
                 self.consecutive_losses = 0
         log.info("Play amount for next trade: $%.2f", self.play_amount)

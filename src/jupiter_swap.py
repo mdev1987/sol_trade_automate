@@ -226,9 +226,7 @@ class JupiterSwap:
         try:
             data = resp.json()
         except ValueError as exc:
-            raise JupiterError(
-                f"order invalid JSON: {resp.text[:200]}", status=200
-            ) from exc
+            raise JupiterError(f"order invalid JSON: {resp.text[:200]}", status=200) from exc
         transaction = data.get("transaction")
         if taker is not None and not transaction:
             raise JupiterError(
@@ -305,16 +303,12 @@ class JupiterSwap:
         if st and 500 <= st < 600:
             return "quote_http_error"
         if st and 400 <= st < 500:
-            return (
-                "quote_no_route" if "route" in str(exc).lower() else "quote_http_error"
-            )
+            return "quote_no_route" if "route" in str(exc).lower() else "quote_http_error"
         if "route" in str(exc).lower():
             return "quote_no_route"
         return "quote_invalid_response"
 
-    async def _do_quote(
-        self, mint: str, amount_raw: int, slippage_bps: int
-    ) -> QuoteResult:
+    async def _do_quote(self, mint: str, amount_raw: int, slippage_bps: int) -> QuoteResult:
         """Fetch one order and validate it against the quote-gate rules."""
         self._qstats["quotes"] += 1
         await self._quote_slot()
@@ -343,15 +337,11 @@ class JupiterSwap:
         except httpx.RequestError as exc:
             self._qstats["quote_http_error"] += 1
             log.warning("quote http error for %s: %s", mint, exc)
-            return QuoteResult(
-                False, None, amount_raw, 0, 0.0, 0, 0.0, "quote_http_error"
-            )
+            return QuoteResult(False, None, amount_raw, 0, 0.0, 0, 0.0, "quote_http_error")
         except Exception as exc:  # noqa: BLE001
             self._qstats["quote_exception"] += 1
             log.exception("quote exception for %s: %s", mint, exc)
-            return QuoteResult(
-                False, None, amount_raw, 0, 0.0, 0, 0.0, "quote_exception"
-            )
+            return QuoteResult(False, None, amount_raw, 0, 0.0, 0, 0.0, "quote_exception")
 
         latency_ms = (time.monotonic() - t0) * 1000
         self._record_latency(latency_ms)
@@ -440,22 +430,16 @@ class JupiterSwap:
         return result
 
     # ------------------------------------------------------------- high level
-    async def buy(
-        self, mint: str, amount_usdc: float, liquidity_usd: float = 0.0
-    ) -> SwapResult:
+    async def buy(self, mint: str, amount_usdc: float, liquidity_usd: float = 0.0) -> SwapResult:
         """Buy ``amount_usdc`` worth of ``mint`` (USDC in), via a verified quote."""
         amount_raw = int(amount_usdc * (10**USDC_DECIMALS))
         quote = await self.quote(mint, amount_raw, liquidity_usd)
         if quote is None or not quote.success:
-            return SwapResult(
-                False, "", amount_raw, 0, quote.reason if quote else "no quote"
-            )
+            return SwapResult(False, "", amount_raw, 0, quote.reason if quote else "no quote")
         if not (quote.order and quote.order.get("transaction")):
             # Paper quoting (no taker) returns a verified route but no
             # transaction — there is nothing to sign or execute.
-            return SwapResult(
-                False, "", amount_raw, 0, "paper quote: no transaction to execute"
-            )
+            return SwapResult(False, "", amount_raw, 0, "paper quote: no transaction to execute")
         return await self.execute(quote.order)
 
     async def sell(self, mint: str, amount_raw: int) -> SwapResult:

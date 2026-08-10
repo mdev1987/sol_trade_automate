@@ -91,33 +91,21 @@ def _load_keypair() -> Optional[Keypair]:
 @dataclass
 class Settings:
     # --- trade parameters ---
-    starting_amount: float = field(
-        default_factory=lambda: _get_float("STARTING_AMOUNT", 2.0)
-    )
+    starting_amount: float = field(default_factory=lambda: _get_float("STARTING_AMOUNT", 2.0))
     stop_loss: float = field(default_factory=lambda: _get_float("STOP_LOSS", 0.82))
     take_profit: float = field(default_factory=lambda: _get_float("TAKE_PROFIT", 2.0))
     slippage_bps: int = field(default_factory=lambda: _get_int("SLIPPAGE", 150))
     poll_interval: int = field(default_factory=lambda: _get_int("POLL_INTERVAL", 8))
-    max_scan_window_min: int = field(
-        default_factory=lambda: _get_int("MAX_SCAN_WINDOW", 15)
-    )
+    max_scan_window_min: int = field(default_factory=lambda: _get_int("MAX_SCAN_WINDOW", 15))
 
     # --- risk management ---
-    loss_pause_trigger: int = field(
-        default_factory=lambda: _get_int("LOSS_PAUSE_TRIGGER", 2)
-    )
-    loss_pause_minutes: int = field(
-        default_factory=lambda: _get_int("LOSS_PAUSE_MINUTES", 5)
-    )
+    loss_pause_trigger: int = field(default_factory=lambda: _get_int("LOSS_PAUSE_TRIGGER", 2))
+    loss_pause_minutes: int = field(default_factory=lambda: _get_int("LOSS_PAUSE_MINUTES", 5))
     play_floor: float = field(default_factory=lambda: _get_float("PLAY_FLOOR", 1.0))
-    reinvest_ratio: float = field(
-        default_factory=lambda: _get_float("REINVEST_RATIO", 0.60)
-    )
+    reinvest_ratio: float = field(default_factory=lambda: _get_float("REINVEST_RATIO", 0.60))
     # daily loss kill switch: halt trading until next UTC day when daily
     # realized PnL <= -DAILY_LOSS_LIMIT (0 = disabled)
-    daily_loss_limit: float = field(
-        default_factory=lambda: _get_float("DAILY_LOSS_LIMIT", 10.0)
-    )
+    daily_loss_limit: float = field(default_factory=lambda: _get_float("DAILY_LOSS_LIMIT", 10.0))
 
     # --- exits / monitoring ---
     # max hold time before a position is force-exited (stuck-position watchdog)
@@ -127,9 +115,7 @@ class Settings:
     # minimum feed score for a launch to be queued (feed-data entry path)
     min_score: float = field(default_factory=lambda: _get_float("MIN_SCORE", 40.0))
     # periodic /status heartbeat card interval (minutes; 0 = disabled)
-    status_interval_min: int = field(
-        default_factory=lambda: _get_int("STATUS_INTERVAL_MIN", 15)
-    )
+    status_interval_min: int = field(default_factory=lambda: _get_int("STATUS_INTERVAL_MIN", 15))
 
     # --- mode ---
     dry_run: bool = field(default_factory=lambda: _get_bool("DRY_RUN", True))
@@ -145,13 +131,10 @@ class Settings:
     )
 
     # --- jupiter (execution + price fallback) ---
-    jupiter_api_key: str = field(
-        default_factory=lambda: os.getenv("JUPITER_API_KEY", "")
-    )
+    jupiter_api_key: str = field(default_factory=lambda: os.getenv("JUPITER_API_KEY", ""))
     jupiter_api: str = field(
         default_factory=lambda: (
-            os.getenv("JUPITER_API_URI")
-            or os.getenv("JUPITER_API", "https://api.jup.ag")
+            os.getenv("JUPITER_API_URI") or os.getenv("JUPITER_API", "https://api.jup.ag")
         )
     )
 
@@ -166,9 +149,7 @@ class Settings:
 
     # --- dexscreener (pair liquidity / volume / price, ~60 req/min) ---
     dexscreener_base: str = field(
-        default_factory=lambda: os.getenv(
-            "DEXSCREENER_API", "https://api.dexscreener.com"
-        )
+        default_factory=lambda: os.getenv("DEXSCREENER_API", "https://api.dexscreener.com")
     )
 
     # --- quote gate (jupiter) ---
@@ -185,23 +166,18 @@ class Settings:
 
     # --- telegram alerts / reporting ---
     telegram_bot_token: str = field(
-        default_factory=lambda: (
-            os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN", "")
-        )
+        default_factory=lambda: os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN", "")
     )
     telegram_chat_id: str = field(
-        default_factory=lambda: (
-            os.getenv("CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID", "")
-        )
+        default_factory=lambda: os.getenv("CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID", "")
     )
 
     # --- jupiter price fallback ---
     jupiter_price_base: str = field(
         default_factory=lambda: (
-            (
-                os.getenv("JUPITER_API_URI")
-                or os.getenv("JUPITER_API", "https://api.jup.ag")
-            ).rstrip("/")
+            (os.getenv("JUPITER_API_URI") or os.getenv("JUPITER_API", "https://api.jup.ag")).rstrip(
+                "/"
+            )
             + "/price/v3"
         )
     )

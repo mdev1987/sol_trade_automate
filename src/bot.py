@@ -15,15 +15,15 @@ Dry-run: the quote gate still runs against Jupiter's real /order API
 (paper quoting — no taker, so Jupiter returns a verified route but never a
 transaction), but nothing is ever signed or executed.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import time as _t
-from datetime import datetime, timezone
 from typing import Optional
 
-from config import settings, USDC_DECIMALS
+from config import USDC_DECIMALS, settings
 from control import TradeGate
 from dexscreener import DexScreenerClient
 from jupiter_swap import JupiterSwap, SwapResult
@@ -39,15 +39,23 @@ log = logging.getLogger("sniper_bot.bot")
 
 PAPER_QUOTE_SENTINEL = "paper quote: no transaction to execute"
 
-# simulated exit proceeds multipliers for dry-run (no real fill prices)
-_DRY_PROCEEDS = {"take_profit": lambda s: s.take_profit,
-                 "stop_loss": lambda s: s.stop_loss,
-                 "dead_pool": lambda s: 0.0}
+# simulated exit proceeds multipliers for dry-run (no real fill prices).
+# Unknown reasons (max_hold / shutdown) sell at the last known price instead.
+_DRY_PROCEEDS = {
+    "take_profit": lambda s, _sig: s.take_profit,
+    "stop_loss": lambda s, _sig: s.stop_loss,
+    "dead_pool": lambda s, _sig: 0.0,
+}
 
 
-async def _estimate_entry_price(mint: str, launch, jupiter: JupiterSwap,
-                                ds: DexScreenerClient, live_feed: LivePriceFeed | None,
-                                pair) -> tuple[float | None, float]:
+async def _estimate_entry_price(
+    mint: str,
+    launch,
+    jupiter: JupiterSwap,
+    ds: DexScreenerClient,
+    live_feed: LivePriceFeed | None,
+    pair,
+) -> tuple[float | None, float]:
     """Best available USD price before/without a fill: pair > jupiter > live > feed-SOL.
 
     Returns (price_usd, liquidity_usd).
@@ -76,26 +84,47 @@ async def _quick_pair(ds: DexScreenerClient, mint: str):
         return None
 
 
-async def execute_trade(candidate: Candidate, risk: RiskManager,
-                        jupiter: JupiterSwap, ds: DexScreenerClient,
-                        notifier: TelegramNotifier,
-                        stats: Optional[TradeStats] = None,
-                        live_feed: Optional[LivePriceFeed] = None) -> tuple[bool, str]:
+async def execute_trade(
+    candidate: Candidate,
+    risk: RiskManager,
+    jupiter: JupiterSwap,
+    ds: DexScreenerClient,
+    notifier: TelegramNotifier,
+    stats: Optional[TradeStats] = None,
+    live_feed: Optional[LivePriceFeed] = None,
+    stop_check=None,
+) -> tuple[bool, str]:
+    """stop_check: callable()->bool — monitor exits "shutdown" when True so a
+    graceful stop sells the open position instead of hard-cancelling it."""
     """One full trade cycle. Returns (won, exit_reason)."""
     amount = risk.play_amount
     mint = candidate.launch.mint
 
-    log.info("=== TRADE %s — buying $%.2f of %s (score %.1f) ===",
-             candidate.launch.symbol, amount, mint[:8], candidate.score)
+    log.info(
+        "=== TRADE %s — buying $%.2f of %s (score %.1f) ===",
+        candidate.launch.symbol,
+        amount,
+        mint[:8],
+        candidate.score,
+    )
 
     # --- entry price estimate BEFORE the buy (fast, one DexScreener call) ---
     pair = await _quick_pair(ds, mint)
     entry_price, liquidity_usd = await _estimate_entry_price(
-        mint, candidate.launch, jupiter, ds, live_feed, pair)
+        mint, candidate.launch, jupiter, ds, live_feed, pair
+    )
     if entry_price is None or entry_price <= 0:
         log.error("No entry price for %s — aborting trade", candidate.launch.symbol)
-        append_journal({"type": "trade", "mint": mint, "symbol": candidate.launch.symbol,
-                        "side": "buy", "status": "failed", "error": "no_entry_price"})
+        append_journal(
+            {
+                "type": "trade",
+                "mint": mint,
+                "symbol": candidate.launch.symbol,
+                "side": "buy",
+                "status": "failed",
+                "error": "no_entry_price",
+            }
+        )
         if stats:
             stats.record_buy_failure(candidate.launch.symbol, "no_entry_price")
         return False, "no_entry_price"
@@ -112,8 +141,16 @@ async def execute_trade(candidate: Candidate, risk: RiskManager,
             simulated = True
         else:
             log.error("BUY FAILED for %s: %s", candidate.launch.symbol, buy_result.error)
-            append_journal({"type": "trade", "mint": mint, "symbol": candidate.launch.symbol,
-                            "side": "buy", "status": "failed", "error": buy_result.error})
+            append_journal(
+                {
+                    "type": "trade",
+                    "mint": mint,
+                    "symbol": candidate.launch.symbol,
+                    "side": "buy",
+                    "status": "failed",
+                    "error": buy_result.error,
+                }
+            )
             if stats:
                 stats.record_buy_failure(candidate.launch.symbol, buy_result.error)
             return False, "buy_failed"
@@ -122,26 +159,50 @@ async def execute_trade(candidate: Candidate, risk: RiskManager,
         # refine entry price from the REAL fill when token decimals are known
         decimals = candidate.launch.raw.get("decimals")
         if decimals is not None and tokens_raw > 0:
-            fill_price = (buy_result.input_amount / 10**USDC_DECIMALS) / (tokens_raw / 10**int(decimals))
+            fill_price = (buy_result.input_amount / 10**USDC_DECIMALS) / (
+                tokens_raw / 10 ** int(decimals)
+            )
             if fill_price > 0:
                 entry_price = fill_price
                 log.info("Fill-based entry price: $%.8f", entry_price)
 
     # 2) MONITOR until exit (live feed for sub-second TP/SL, DexScreener liq)
-    monitor = PriceMonitor(ds, jupiter, entry_price, mint,
-                           live_feed=live_feed if settings.live_feed_exit else None)
-    log.info("Entry $%.8f — TP $%.8f / SL $%.8f — monitoring (live feed %s)",
-             entry_price, monitor.take_profit_price, monitor.stop_loss_price,
-             "on" if monitor.live_feed else "off")
+    monitor = PriceMonitor(
+        ds,
+        jupiter,
+        entry_price,
+        mint,
+        live_feed=live_feed if settings.live_feed_exit else None,
+        stop_check=stop_check,
+    )
+    log.info(
+        "Entry $%.8f — TP $%.8f / SL $%.8f — monitoring (live feed %s)",
+        entry_price,
+        monitor.take_profit_price,
+        monitor.stop_loss_price,
+        "on" if monitor.live_feed else "off",
+    )
     if stats:
-        stats.record_buy(mint, candidate.launch.symbol, amount, entry_price,
-                         monitor.take_profit_price, monitor.stop_loss_price)
+        stats.record_buy(
+            mint,
+            candidate.launch.symbol,
+            amount,
+            entry_price,
+            monitor.take_profit_price,
+            monitor.stop_loss_price,
+        )
         age_s = _t.time() - candidate.launch.created_at if candidate.launch.created_at else 0.0
         await notifier.send_buy(
-            mint, candidate.launch.symbol, candidate.score, entry_price,
-            liquidity_usd, pair.volume_m5 if pair else 0.0,
-            pair.buy_sell_ratio if pair else 0.0, age_s,
-            amount, stats.balance_usd,
+            mint,
+            candidate.launch.symbol,
+            candidate.score,
+            entry_price,
+            liquidity_usd,
+            pair.volume_m5 if pair else 0.0,
+            pair.buy_sell_ratio if pair else 0.0,
+            age_s,
+            amount,
+            stats.balance_usd,
         )
     signal = await monitor.run_until_exit()
     log.info("EXIT SIGNAL: %s @ $%s", signal.reason, signal.price_usd)
@@ -154,8 +215,16 @@ async def execute_trade(candidate: Candidate, risk: RiskManager,
             sell_result = await jupiter.sell(mint, tokens_raw)
         except Exception as exc:  # noqa: BLE001
             log.exception("SELL FAILED for %s", candidate.launch.symbol)
-            append_journal({"type": "trade", "mint": mint, "symbol": candidate.launch.symbol,
-                            "side": "sell", "status": "failed", "error": str(exc)})
+            append_journal(
+                {
+                    "type": "trade",
+                    "mint": mint,
+                    "symbol": candidate.launch.symbol,
+                    "side": "sell",
+                    "status": "failed",
+                    "error": str(exc),
+                }
+            )
             if stats:
                 stats.record_sell_failure(candidate.launch.symbol, str(exc))
             try:
@@ -164,56 +233,89 @@ async def execute_trade(candidate: Candidate, risk: RiskManager,
                 pass
             return False, "sell_failed"
 
-    won = signal.reason == "take_profit" and sell_result.success
     exit_reason = signal.reason
 
     # proceeds + PnL (real fill amounts, or simulated in dry-run)
     if not simulated:
         proceeds_usd = sell_result.output_amount / (10**USDC_DECIMALS)
     else:
-        factor = _DRY_PROCEEDS.get(exit_reason, lambda s: 0.0)(settings)
+        factor = _DRY_PROCEEDS.get(exit_reason)
+        if factor is None:
+            # max_hold / shutdown: sell at the last known price
+            factor = (signal.price_usd / entry_price) if signal.price_usd else 0.0
         proceeds_usd = amount * factor
     pnl_usd = proceeds_usd - amount
+    won = sell_result.success and proceeds_usd > amount
 
     # 4) compounding + risk update
     next_amount = risk.record_result(won)
-    log.info("RESULT: %s (%s) — next trade $%.2f", "WIN" if won else "LOSS",
-             exit_reason, next_amount)
+    log.info(
+        "RESULT: %s (%s) — next trade $%.2f", "WIN" if won else "LOSS", exit_reason, next_amount
+    )
     hold_s = 0.0
     if stats:
         opened_at = stats.active_position.get("opened_at", 0.0)
         hold_s = _t.monotonic() - opened_at if opened_at else 0.0
-        stats.record_exit(won, pnl_usd, proceeds_usd, exit_reason,
-                          signal.price_usd or 0.0, sell_result.signature)
+        stats.record_exit(
+            won, pnl_usd, proceeds_usd, exit_reason, signal.price_usd or 0.0, sell_result.signature
+        )
         roi_pct = (pnl_usd / amount * 100.0) if amount else 0.0
         await notifier.send_sell(
-            mint, candidate.launch.symbol, exit_reason, pnl_usd, roi_pct,
-            amount, proceeds_usd, hold_s, stats.balance_usd,
+            mint,
+            candidate.launch.symbol,
+            exit_reason,
+            pnl_usd,
+            roi_pct,
+            amount,
+            proceeds_usd,
+            hold_s,
+            stats.balance_usd,
         )
 
-    append_trade_log({
-        "mint": mint, "symbol": candidate.launch.symbol, "action": "buy+sell",
-        "side": "close", "amount_usd": amount, "entry_price": entry_price,
-        "exit_price": signal.price_usd, "pnl_usd": round(pnl_usd, 6),
-        "exit_reason": exit_reason, "score": candidate.score,
-        "signature": sell_result.signature, "dry_run": settings.dry_run,
-    })
-    append_journal({"type": "trade", "mint": mint, "symbol": candidate.launch.symbol,
-                    "status": "closed", "won": won, "exit_reason": exit_reason,
-                    "entry_price": entry_price, "exit_price": signal.price_usd,
-                    "play_amount": amount, "next_amount": next_amount,
-                    "pnl_usd": round(pnl_usd, 6), "dry_run": settings.dry_run})
+    append_trade_log(
+        {
+            "mint": mint,
+            "symbol": candidate.launch.symbol,
+            "action": "buy+sell",
+            "side": "close",
+            "amount_usd": amount,
+            "entry_price": entry_price,
+            "exit_price": signal.price_usd,
+            "pnl_usd": round(pnl_usd, 6),
+            "exit_reason": exit_reason,
+            "score": candidate.score,
+            "signature": sell_result.signature,
+            "dry_run": settings.dry_run,
+        }
+    )
+    append_journal(
+        {
+            "type": "trade",
+            "mint": mint,
+            "symbol": candidate.launch.symbol,
+            "status": "closed",
+            "won": won,
+            "exit_reason": exit_reason,
+            "entry_price": entry_price,
+            "exit_price": signal.price_usd,
+            "play_amount": amount,
+            "next_amount": next_amount,
+            "pnl_usd": round(pnl_usd, 6),
+            "dry_run": settings.dry_run,
+        }
+    )
     return won, exit_reason
 
 
-async def _wait_daily_reset(stats: TradeStats, gate: TradeGate,
-                            notifier: TelegramNotifier) -> None:
+async def _wait_daily_reset(stats: TradeStats, gate: TradeGate, notifier: TelegramNotifier) -> None:
     """Daily-loss kill switch: alert once, then idle until UTC midnight."""
-    log.warning("DAILY LOSS LIMIT HIT (today %.2f) — halted until UTC midnight",
-                stats.daily_pnl_usd)
+    log.warning(
+        "DAILY LOSS LIMIT HIT (today %.2f) — halted until UTC midnight", stats.daily_pnl_usd
+    )
     try:
-        await notifier.send_alert("DAILY LOSS LIMIT",
-                                  f"Today {stats.daily_pnl_usd:+.2f} — halted until UTC midnight")
+        await notifier.send_alert(
+            "DAILY LOSS LIMIT", f"Today {stats.daily_pnl_usd:+.2f} — halted until UTC midnight"
+        )
     except Exception:  # noqa: BLE001
         pass
     while not gate.shutdown:
@@ -228,10 +330,13 @@ async def _wait_daily_reset(stats: TradeStats, gate: TradeGate,
         log.info("Gate shutdown during daily halt — exiting")
 
 
-async def trade_loop(queue: asyncio.Queue[Candidate], gate: TradeGate,
-                     stats: Optional[TradeStats] = None,
-                     notifier: Optional[TelegramNotifier] = None,
-                     live_feed: Optional[LivePriceFeed] = None) -> None:
+async def trade_loop(
+    queue: asyncio.Queue[Candidate],
+    gate: TradeGate,
+    stats: Optional[TradeStats] = None,
+    notifier: Optional[TelegramNotifier] = None,
+    live_feed: Optional[LivePriceFeed] = None,
+) -> None:
     """Consume validated candidates forever, one trade at a time.
 
     - pauses when the gate is closed (telegram /stop or signal);
@@ -240,13 +345,14 @@ async def trade_loop(queue: asyncio.Queue[Candidate], gate: TradeGate,
     """
     jupiter = JupiterSwap()
     ds = DexScreenerClient()
-    risk = RiskManager()                     # persistent: pause + play amount
+    risk = RiskManager()  # persistent: pause + play amount
     if notifier is None:
         from telegram_bot import build_telegram_bot
+
         notifier = build_telegram_bot(gate, stats or TradeStats(dry_run=settings.dry_run))
     try:
         while True:
-            await gate.wait()                # paused until /start, auto-start, or shutdown
+            await gate.wait()  # paused until /start, auto-start, or shutdown
             if gate.shutdown:
                 log.info("Gate shutdown — trade loop exiting")
                 break
@@ -259,7 +365,16 @@ async def trade_loop(queue: asyncio.Queue[Candidate], gate: TradeGate,
             if candidate is None:
                 break  # shutdown while waiting for a candidate
             try:
-                await execute_trade(candidate, risk, jupiter, ds, notifier, stats, live_feed)
+                await execute_trade(
+                    candidate,
+                    risk,
+                    jupiter,
+                    ds,
+                    notifier,
+                    stats,
+                    live_feed,
+                    stop_check=lambda: gate.shutdown,
+                )
                 if stats is not None:
                     stats.quote_gate = jupiter.quote_summary()
             except Exception:  # noqa: BLE001 — one bad trade must not kill the loop
@@ -292,6 +407,7 @@ async def _wait_risk_paused(risk: RiskManager, gate: TradeGate) -> None:
 
 if __name__ == "__main__":
     from monitoring import setup_logging
+
     setup_logging()
     settings.validate()
     q: asyncio.Queue[Candidate] = asyncio.Queue()

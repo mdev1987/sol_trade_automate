@@ -12,6 +12,7 @@ Pump.fun launch feed — PRIMARY: PumpAPI (stream.pumpapi.io), FALLBACK: PumpDev
 Both are free. The hub falls back to PumpDev when PumpAPI keeps failing and
 periodically tries to revive the primary.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -26,8 +27,8 @@ from config import settings
 
 log = logging.getLogger("sniper_bot.feed")
 
-SILENCE_TIMEOUT = 180   # seconds without an event before failing over
-REVIVE_INTERVAL = 300   # seconds of fallback before reviving the primary
+SILENCE_TIMEOUT = 180  # seconds without an event before failing over
+REVIVE_INTERVAL = 300  # seconds of fallback before reviving the primary
 
 
 @dataclass
@@ -41,13 +42,13 @@ class TokenLaunch:
     creator: str
     signature: str
     initial_buy_tokens: float
-    dev_sol: Optional[float]          # SOL the developer bought at launch
+    dev_sol: Optional[float]  # SOL the developer bought at launch
     market_cap_sol: Optional[float]
     quote_mint: str
     is_mayhem_mode: bool
     is_cashback_enabled: bool
-    source: str                       # "pumpapi" | "pumpdev"
-    created_at: float = 0.0           # epoch seconds (0 = unknown)
+    source: str  # "pumpapi" | "pumpdev"
+    created_at: float = 0.0  # epoch seconds (0 = unknown)
     raw: dict = field(default_factory=dict)
 
     @classmethod
@@ -58,15 +59,15 @@ class TokenLaunch:
             raise ValueError(f"not a create event: {action}")
 
         # dev SOL bought at launch — both feeds expose it under different names
-        dev_sol = (
-            ev.get("initialQuoteAmount")
-            or ev.get("quoteAmount")
-            or ev.get("solAmount")
-        )
+        dev_sol = ev.get("initialQuoteAmount") or ev.get("quoteAmount") or ev.get("solAmount")
         # market cap — pumpapi quotes in quote token (SOL for pump), pumpdev has marketCapSol
         mcap = (
             ev.get("marketCapQuote")
-            if ev.get("quoteMint") in ("So11111111111111111111111111111111111111112", "So11111111111111111111111111111111111111111")
+            if ev.get("quoteMint")
+            in (
+                "So11111111111111111111111111111111111111112",
+                "So11111111111111111111111111111111111111111",
+            )
             else ev.get("marketCapSol")
         )
         # launch time — pumpapi `timestamp` (epoch s; ms if > 1e12), pumpdev best-effort
@@ -208,13 +209,12 @@ class PumpEventHub:
             try:
                 primary = self.primary.events()
                 while True:
-                    ev = await asyncio.wait_for(
-                        primary.__anext__(), timeout=SILENCE_TIMEOUT
-                    )
+                    ev = await asyncio.wait_for(primary.__anext__(), timeout=SILENCE_TIMEOUT)
                     self._dispatch(ev)
             except asyncio.TimeoutError:
-                log.warning("PumpAPI silent for %ds — switching to PumpDev fallback",
-                            SILENCE_TIMEOUT)
+                log.warning(
+                    "PumpAPI silent for %ds — switching to PumpDev fallback", SILENCE_TIMEOUT
+                )
             except StopAsyncIteration:
                 pass
             except asyncio.CancelledError:
@@ -227,9 +227,7 @@ class PumpEventHub:
             try:
                 fallback = self.fallback.events()
                 while True:
-                    ev = await asyncio.wait_for(
-                        fallback.__anext__(), timeout=REVIVE_INTERVAL
-                    )
+                    ev = await asyncio.wait_for(fallback.__anext__(), timeout=REVIVE_INTERVAL)
                     self._dispatch(ev)
             except asyncio.TimeoutError:
                 log.info("Revive check — trying PumpAPI primary again")

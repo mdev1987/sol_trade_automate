@@ -7,14 +7,15 @@ Loop: WebSocket (<1s) → rug check (feed data) → feed filters → feed score
       and the bot buys on validated feed data instead (entry speed = edge).
       DexScreener becomes a monitoring source inside the trade.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import Optional
 from datetime import datetime, timezone
+from typing import Optional
 
 from config import settings
 from control import TradeGate
@@ -35,6 +36,7 @@ class Candidate:
     pair may be None: entry decisions use feed data only; DexScreener is
     fetched (best-effort) inside the trade for the monitor/cards.
     """
+
     launch: TokenLaunch
     pair: Optional[Pair]
     score: float
@@ -43,9 +45,14 @@ class Candidate:
 
 async def process_launch(launch: TokenLaunch) -> Candidate | None:
     """Validate one launch from feed data only: rug → filters → score."""
-    log.info("NEW LAUNCH: %s ($%s) mint=%s dev=%sSOL mcap=%sSOL",
-             launch.symbol, launch.name[:30], launch.mint[:8],
-             launch.dev_sol, launch.market_cap_sol)
+    log.info(
+        "NEW LAUNCH: %s ($%s) mint=%s dev=%sSOL mcap=%sSOL",
+        launch.symbol,
+        launch.name[:30],
+        launch.mint[:8],
+        launch.dev_sol,
+        launch.market_cap_sol,
+    )
 
     # 1) rug detection (any flag = skip) — feed-only; pair checks are skipped
     report = rug_check(launch, None, launch.raw)
@@ -66,21 +73,39 @@ async def process_launch(launch: TokenLaunch) -> Candidate | None:
         return None
 
     candidate = Candidate(
-        launch=launch, pair=None, score=score,
+        launch=launch,
+        pair=None,
+        score=score,
         scanned_at=datetime.now(timezone.utc).isoformat(),
     )
-    log.info("QUALIFIED %s (feed entry) — score=%.1f dev=%sSOL mcap=%sSOL",
-             launch.symbol, score, launch.dev_sol, launch.market_cap_sol)
-    append_journal({"type": "scan", "mint": launch.mint, "symbol": launch.symbol,
-                    "name": launch.name, "score": score, "pair": None,
-                    "price_sol": launch.raw.get("price"),
-                    "dev_sol": launch.dev_sol, "mcap_sol": launch.market_cap_sol})
+    log.info(
+        "QUALIFIED %s (feed entry) — score=%.1f dev=%sSOL mcap=%sSOL",
+        launch.symbol,
+        score,
+        launch.dev_sol,
+        launch.market_cap_sol,
+    )
+    append_journal(
+        {
+            "type": "scan",
+            "mint": launch.mint,
+            "symbol": launch.symbol,
+            "name": launch.name,
+            "score": score,
+            "pair": None,
+            "price_sol": launch.raw.get("price"),
+            "dev_sol": launch.dev_sol,
+            "mcap_sol": launch.market_cap_sol,
+        }
+    )
     return candidate
 
 
-async def scan_loop(queue: asyncio.Queue[Candidate],
-                   gate: Optional[TradeGate] = None,
-                   router: Optional[LaunchFeedRouter] = None) -> None:
+async def scan_loop(
+    queue: asyncio.Queue[Candidate],
+    gate: Optional[TradeGate] = None,
+    router: Optional[LaunchFeedRouter] = None,
+) -> None:
     """Run the scanner forever. One scan window = MAX_SCAN_WINDOW minutes.
 
     Pauses when the trade gate is closed (telegram /stop or signal).
@@ -101,7 +126,7 @@ async def scan_loop(queue: asyncio.Queue[Candidate],
             cycle_start = time.monotonic()
             log.info("=== New scan cycle started (window %d min) ===", settings.max_scan_window_min)
             async for launch in stream.launches():
-                if gate is not None and not gate.is_started():
+                if gate is not None and (not gate.is_started() or gate.shutdown):
                     log.info("Gate closed — scanner paused")
                     break
                 try:
@@ -122,6 +147,7 @@ async def scan_loop(queue: asyncio.Queue[Candidate],
 
 if __name__ == "__main__":
     from monitoring import setup_logging
+
     setup_logging()
     settings.validate()
     q: asyncio.Queue[Candidate] = asyncio.Queue()

@@ -15,10 +15,10 @@ Control:
   - Telegram /start → reopen the gate (resume trading).
   - Telegram /status → balance, winrate, PnL, active position (markdown).
 """
+
 from __future__ import annotations
 
 import asyncio
-import logging
 import signal
 import sys
 import time as _t
@@ -49,8 +49,12 @@ async def heartbeat_loop(notifier, stats, t0) -> None:
         await asyncio.sleep(interval)
         try:
             await notifier.send_status(
-                _t.monotonic() - t0, stats.trades, stats.winrate * 100.0,
-                stats.realized_pnl_usd, stats.balance_usd, stats.exit_counts,
+                _t.monotonic() - t0,
+                stats.trades,
+                stats.winrate * 100.0,
+                stats.realized_pnl_usd,
+                stats.balance_usd,
+                stats.exit_counts,
                 quotes=stats.quote_gate,
             )
             log.info("Heartbeat status card sent")
@@ -108,10 +112,8 @@ async def main() -> None:
     await live_feed.start()
 
     scanner_task = asyncio.create_task(scan_loop(queue, gate, router), name="scanner")
-    bot_task = asyncio.create_task(
-        trade_loop(queue, gate, stats, notifier, live_feed), name="bot")
-    heartbeat_task = asyncio.create_task(
-        heartbeat_loop(notifier, stats, t0), name="heartbeat")
+    bot_task = asyncio.create_task(trade_loop(queue, gate, stats, notifier, live_feed), name="bot")
+    heartbeat_task = asyncio.create_task(heartbeat_loop(notifier, stats, t0), name="heartbeat")
     for t in (scanner_task, bot_task, heartbeat_task):
         t.add_done_callback(_log_task_error)
 
@@ -123,8 +125,8 @@ async def main() -> None:
 
     await stop.wait()
     log.info("Graceful shutdown: finishing in-flight trade (≤ %ds)…", GRACEFUL_TRADE_TIMEOUT_S)
-    await gate.stop()          # no new trades
-    gate.request_shutdown()    # wake idle loops so they exit immediately
+    await gate.stop()  # no new trades
+    gate.request_shutdown()  # wake idle loops so they exit immediately
     try:
         await asyncio.wait_for(bot_task, timeout=GRACEFUL_TRADE_TIMEOUT_S)
     except asyncio.TimeoutError:
@@ -135,13 +137,23 @@ async def main() -> None:
     await live_feed.stop()
     await router.stop()
     await notifier.send_stopped(
-        _t.monotonic() - t0, stats.trades, stats.winrate * 100.0,
-        stats.realized_pnl_usd, stats.balance_usd, stats.exit_counts,
-        skips="", quotes=stats.quote_gate,
+        _t.monotonic() - t0,
+        stats.trades,
+        stats.winrate * 100.0,
+        stats.realized_pnl_usd,
+        stats.balance_usd,
+        stats.exit_counts,
+        skips="",
+        quotes=stats.quote_gate,
     )
     await notifier.close()
-    log.info("Bye. (final stats: %s trades, %d wins, pnl $%.2f, balance $%.2f)",
-             stats.trades, stats.wins, stats.realized_pnl_usd, stats.balance_usd)
+    log.info(
+        "Bye. (final stats: %s trades, %d wins, pnl $%.2f, balance $%.2f)",
+        stats.trades,
+        stats.wins,
+        stats.realized_pnl_usd,
+        stats.balance_usd,
+    )
 
 
 if __name__ == "__main__":

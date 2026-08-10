@@ -2,6 +2,7 @@
 Compounding — 60% reinvested, 40% saved on every win.
 (bot_plan/sample_bot/compunding_strategy.py)
 """
+
 from __future__ import annotations
 
 from config import settings

@@ -4,6 +4,7 @@ Rug detection — any flag means the token is skipped.
 Course checks (bot_plan/sample_bot/rug_detection.py) + extra on-chain
 authority checks available from the feed (bot_plan/docs/pumpapi_stream_doc.md).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -13,7 +14,12 @@ from dexscreener import Pair
 
 # Scam name keywords (course + sample-code extensions)
 SCAM_KEYWORDS = (
-    "guaranteed", "100x", "airdrop", "giveaway", "presale", "safemoon",
+    "guaranteed",
+    "100x",
+    "airdrop",
+    "giveaway",
+    "presale",
+    "safemoon",
 )
 
 # Dev bought more than this many SOL at launch → loaded bag, likely dumps
@@ -77,9 +83,9 @@ def check_authorities(raw: dict) -> list[str]:
     """On-chain authority checks available in PumpAPI-style events."""
     flags = []
     if raw.get("mintAuthority"):
-        flags.append("mint_authority_set")      # can mint unlimited supply
+        flags.append("mint_authority_set")  # can mint unlimited supply
     if raw.get("freezeAuthority"):
-        flags.append("freeze_authority_set")    # can freeze = honeypot
+        flags.append("freeze_authority_set")  # can freeze = honeypot
     burned = raw.get("burnedLiquidity")
     if burned is not None:
         try:

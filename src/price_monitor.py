@@ -11,6 +11,7 @@ still polled at POLL_INTERVAL for liquidity. MAX_HOLD_MIN force-exits a
 position that never hits TP/SL/dead-pool (stuck-position watchdog).
 (bot_plan/sample_bot/price_monitory_exit_strategy.py)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -25,30 +26,38 @@ from jupiter_swap import JupiterSwap
 log = logging.getLogger("sniper_bot.monitor")
 
 DEAD_POOL_LIQUIDITY_USD = 25.0  # pool is effectively dead below this
-LIVE_TICK_S = 1.0               # fast loop when a fresh live price exists
+LIVE_TICK_S = 1.0  # fast loop when a fresh live price exists
 
 
 @dataclass
 class ExitSignal:
     exit: bool
-    reason: str          # "take_profit" | "stop_loss" | "dead_pool" | "max_hold" | "none"
+    reason: str  # "take_profit"|"stop_loss"|"dead_pool"|"max_hold"|"shutdown"|"none"
     price_usd: float | None
     liquidity_usd: float | None
 
 
 class PriceMonitor:
-    def __init__(self, dexscreener: DexScreenerClient, jupiter: JupiterSwap,
-                 entry_price_usd: float, mint: str, live_feed=None):
+    def __init__(
+        self,
+        dexscreener: DexScreenerClient,
+        jupiter: JupiterSwap,
+        entry_price_usd: float,
+        mint: str,
+        live_feed=None,
+        stop_check=None,
+    ):
         self.ds = dexscreener
         self.jupiter = jupiter
         self.entry_price_usd = entry_price_usd
         self.mint = mint
         self.live_feed = live_feed
+        self.stop_check = stop_check  # callable -> bool; exit "shutdown" when True
         self.take_profit_price = entry_price_usd * settings.take_profit
         self.stop_loss_price = entry_price_usd * settings.stop_loss
         self.started_at = time.monotonic()
         self.max_hold_s = settings.max_hold_min * 60.0
-        self._last_ds = 0.0          # DexScreener throttle (poll_interval cadence)
+        self._last_ds = 0.0  # DexScreener throttle (poll_interval cadence)
         self._cached_liq: float | None = None
 
     async def current_pair(self) -> Pair | None:
@@ -89,17 +98,36 @@ class PriceMonitor:
             return ExitSignal(False, "none", None, liquidity)
         return self._evaluate(price_usd, liquidity)
 
+    def _shutdown_pending(self) -> bool:
+        return bool(self.stop_check and self.stop_check())
+
     async def run_until_exit(self, on_price=None) -> ExitSignal:
-        """Poll until an exit signal fires.
+        """Poll until an exit signal fires (or shutdown is requested).
 
         Ticks every 1s while a fresh live price exists (DexScreener still
         polled at POLL_INTERVAL for liquidity), else every POLL_INTERVAL.
+        On shutdown, returns "shutdown" so the caller can sell the position
+        instead of being hard-cancelled with a stuck position.
         """
         while True:
+            if self._shutdown_pending():
+                last_price = None
+                if self.live_feed is not None:
+                    last_price = await self.live_feed.price_usd(self.mint)
+                if last_price is None:
+                    last_price = await self.jupiter.price_usd(self.mint)
+                if last_price is None:
+                    pair = await self.current_pair()  # last resort: DexScreener
+                    if pair is not None:
+                        last_price = pair.price_usd
+                log.info("Shutdown requested — exiting position at $%s", last_price)
+                return ExitSignal(True, "shutdown", last_price, self._cached_liq)
             signal = await self.check()
             if on_price:
                 await on_price(signal)
             if signal.exit:
                 return signal
-            fast = self.live_feed is not None and await self.live_feed.price_usd(self.mint) is not None
+            fast = (
+                self.live_feed is not None and await self.live_feed.price_usd(self.mint) is not None
+            )
             await asyncio.sleep(LIVE_TICK_S if fast else settings.poll_interval)

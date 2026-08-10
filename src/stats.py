@@ -3,12 +3,12 @@
 `TradeStats` is updated by the trade loop and rendered as Telegram markdown
 (consumed by telegramify-markdown, so emoji + **bold** + `code` are safe).
 """
+
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
 
 from config import settings
 
@@ -31,8 +31,8 @@ class TradeStats:
     sell_failures: int = 0
     last_trade: dict = field(default_factory=dict)
     active_position: dict = field(default_factory=dict)
-    exit_counts: dict = field(default_factory=dict)   # reason -> count
-    quote_gate: str = ""                               # jupiter quote summary
+    exit_counts: dict = field(default_factory=dict)  # reason -> count
+    quote_gate: str = ""  # jupiter quote summary
 
     # daily PnL tracking (UTC day) for the daily-loss kill switch
     day_key: str = field(default_factory=_utc_day)
@@ -51,18 +51,36 @@ class TradeStats:
     def in_trade(self) -> bool:
         return bool(self.active_position)
 
-    def record_buy(self, mint: str, symbol: str, amount_usd: float,
-                   entry_price: float, tp_price: float, sl_price: float) -> None:
+    def record_buy(
+        self,
+        mint: str,
+        symbol: str,
+        amount_usd: float,
+        entry_price: float,
+        tp_price: float,
+        sl_price: float,
+    ) -> None:
         """Debit the bankroll and remember the open position."""
         self.balance_usd -= amount_usd
         self.active_position = {
-            "mint": mint, "symbol": symbol, "amount_usd": amount_usd,
-            "entry_price": entry_price, "tp_price": tp_price, "sl_price": sl_price,
+            "mint": mint,
+            "symbol": symbol,
+            "amount_usd": amount_usd,
+            "entry_price": entry_price,
+            "tp_price": tp_price,
+            "sl_price": sl_price,
             "opened_at": time.monotonic(),
         }
 
-    def record_exit(self, won: bool, pnl_usd: float, proceeds_usd: float,
-                    exit_reason: str, exit_price: float, signature: str = "") -> None:
+    def record_exit(
+        self,
+        won: bool,
+        pnl_usd: float,
+        proceeds_usd: float,
+        exit_reason: str,
+        exit_price: float,
+        signature: str = "",
+    ) -> None:
         """Credit proceeds, update win/loss counters and the PnL total."""
         today = _utc_day()
         if today != self.day_key:
@@ -79,8 +97,11 @@ class TradeStats:
         self.exit_counts[exit_reason] = self.exit_counts.get(exit_reason, 0) + 1
         self.last_trade = {
             "symbol": self.active_position.get("symbol", ""),
-            "won": won, "pnl_usd": pnl_usd, "exit_reason": exit_reason,
-            "exit_price": exit_price, "signature": signature,
+            "won": won,
+            "pnl_usd": pnl_usd,
+            "exit_reason": exit_reason,
+            "exit_price": exit_price,
+            "signature": signature,
         }
         self.active_position = {}
 
@@ -101,9 +122,7 @@ class TradeStats:
     def next_day_reset_seconds(self) -> float:
         """Seconds until UTC midnight (day rollover that resets daily PnL)."""
         now = datetime.now(timezone.utc)
-        tomorrow = (now + timedelta(days=1)).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         return max(0.0, (tomorrow - now).total_seconds())
 
     # ---------------------------------------------------------------- helpers

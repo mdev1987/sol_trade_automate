@@ -1,6 +1,7 @@
 """
 Wallet helpers — solders keypair from a base58 private key.
 """
+
 from __future__ import annotations
 
 from solders.keypair import Keypair

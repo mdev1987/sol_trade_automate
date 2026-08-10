@@ -16,6 +16,7 @@ bot_plan/docs/telegram_bot_docs/python_telegram_bot.md):
   /help    — command list
 Commands are only answered for the configured CHAT_ID.
 """
+
 from __future__ import annotations
 
 import logging
@@ -23,7 +24,8 @@ from datetime import datetime, timezone
 from typing import Awaitable, Callable, Optional
 
 import telegramify_markdown
-from telegram import Bot, MessageEntity as TGMessageEntity, Update
+from telegram import Bot, Update
+from telegram import MessageEntity as TGMessageEntity
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 log = logging.getLogger("sniper_bot.telegram")
@@ -53,9 +55,14 @@ ICONS = {
 class TelegramNotifier:
     """Sends markdown trade cards and answers /start /stop /status commands."""
 
-    def __init__(self, bot_token: str = "", chat_id: str = "",
-                 gate=None, stats=None,
-                 on_stop: Optional[Callable[[], Awaitable[None]]] = None) -> None:
+    def __init__(
+        self,
+        bot_token: str = "",
+        chat_id: str = "",
+        gate=None,
+        stats=None,
+        on_stop: Optional[Callable[[], Awaitable[None]]] = None,
+    ) -> None:
         token = (bot_token or "").strip()
         self._chat_id = str(chat_id or "").strip()
         self._enabled = bool(token and self._chat_id)
@@ -158,10 +165,19 @@ class TelegramNotifier:
         await self._send(body)
 
     # ------------------------------------------------------------------- trade
-    async def send_buy(self, mint: str, symbol: str, score: float,
-                       price_usd: Optional[float], liquidity_usd: float,
-                       volume_5m: float, buy_ratio: float, age_s: float,
-                       amount_usdc: float, balance_usdc: float) -> None:
+    async def send_buy(
+        self,
+        mint: str,
+        symbol: str,
+        score: float,
+        price_usd: Optional[float],
+        liquidity_usd: float,
+        volume_5m: float,
+        buy_ratio: float,
+        age_s: float,
+        amount_usdc: float,
+        balance_usdc: float,
+    ) -> None:
         """A single buy card, values in USDC."""
         short = (mint or "")[:10]
         await self._send(
@@ -173,10 +189,19 @@ class TelegramNotifier:
             f"{SEP} Used `${self._f(amount_usdc)}` {SEP} Bal `${self._f(balance_usdc)}` USDC"
         )
 
-    async def send_sell(self, mint: str, symbol: str, reason: str,
-                        pnl_usd: float, roi_pct: float, entry_usd: float,
-                        exit_usd: float, hold_s: float, balance_usdc: float,
-                        peak_roi_pct: Optional[float] = None) -> None:
+    async def send_sell(
+        self,
+        mint: str,
+        symbol: str,
+        reason: str,
+        pnl_usd: float,
+        roi_pct: float,
+        entry_usd: float,
+        exit_usd: float,
+        hold_s: float,
+        balance_usdc: float,
+        peak_roi_pct: Optional[float] = None,
+    ) -> None:
         """A sell/exit card with PnL expressed in USDC."""
         icon = ICONS.get(reason, "🔻")
         card = ICONS["sell_win"] if pnl_usd >= 0 else ICONS["sell_loss"]
@@ -197,10 +222,17 @@ class TelegramNotifier:
             text += f" {SEP} {reason}"
         await self._send(text)
 
-    async def send_status(self, runtime_s: float, trades: int, win_rate: float,
-                          pnl_usdc: float, balance_usdc: float,
-                          exit_counts: dict, skips: str = "",
-                          quotes: str = "") -> None:
+    async def send_status(
+        self,
+        runtime_s: float,
+        trades: int,
+        win_rate: float,
+        pnl_usdc: float,
+        balance_usdc: float,
+        exit_counts: dict,
+        skips: str = "",
+        quotes: str = "",
+    ) -> None:
         """Periodic summary card."""
         minutes = runtime_s / 60
         s = self._sign(pnl_usdc)
@@ -217,10 +249,17 @@ class TelegramNotifier:
             f"{exits}"
         )
 
-    async def send_stopped(self, runtime_s: float, trades: int, win_rate: float,
-                           pnl_usdc: float, balance_usdc: float,
-                           exit_counts: dict, skips: str = "",
-                           quotes: str = "") -> None:
+    async def send_stopped(
+        self,
+        runtime_s: float,
+        trades: int,
+        win_rate: float,
+        pnl_usdc: float,
+        balance_usdc: float,
+        exit_counts: dict,
+        skips: str = "",
+        quotes: str = "",
+    ) -> None:
         """Shutdown card; same stats as send_status."""
         minutes = runtime_s / 60
         s = self._sign(pnl_usdc)
@@ -291,9 +330,7 @@ class TelegramNotifier:
         app.add_handler(CommandHandler("help", self._cmd_help))
         await app.initialize()
         await app.start()
-        await app.updater.start_polling(
-            allowed_updates=["message"], drop_pending_updates=True
-        )
+        await app.updater.start_polling(allowed_updates=["message"], drop_pending_updates=True)
         self._application = app
         log.info("Telegram command bot polling (chat %s)", self._chat_id)
 
@@ -316,6 +353,7 @@ class TelegramNotifier:
 def build_telegram_bot(gate, stats, on_stop=None) -> TelegramNotifier:
     """Factory so main.py can share one instance with the trade loop."""
     from config import settings
+
     return TelegramNotifier(
         bot_token=settings.telegram_bot_token,
         chat_id=settings.telegram_chat_id,

@@ -9,6 +9,7 @@ source, polled at its own cadence.
 Also caches a SOL->USD conversion (Jupiter /price/v3, 60s TTL) so the
 SOL-denominated pump prices can be compared against USD entry/exit levels.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -25,7 +26,7 @@ log = logging.getLogger("sniper_bot.live_feed")
 
 # events we accept: buy/sell on the pump pool carry {"price": <SOL per token>}
 TRADE_ACTIONS = ("buy", "sell")
-PRICE_MAX_AGE_S = 10.0      # a price older than this is stale
+PRICE_MAX_AGE_S = 10.0  # a price older than this is stale
 SOL_USD_TTL_S = 60.0
 RECONNECT_BASE_S = 1.0
 RECONNECT_MAX_S = 30.0
@@ -41,7 +42,7 @@ class LivePriceFeed:
 
     def __init__(self, url: str | None = None, trades=None) -> None:
         self.url = url or settings.pumpapi_ws_url
-        self._trades = trades           # async iterator of (mint, price_sol)
+        self._trades = trades  # async iterator of (mint, price_sol)
         self._prices: dict[str, tuple[float, float]] = {}
         self._sol_usd: float | None = None
         self._sol_usd_ts = 0.0
@@ -138,9 +139,7 @@ class LivePriceFeed:
         if self._sol_usd is not None and time.monotonic() - self._sol_usd_ts < SOL_USD_TTL_S:
             return self._sol_usd
         try:
-            r = await self._client.get(
-                settings.jupiter_price_base, params={"ids": SOL_MINT}
-            )
+            r = await self._client.get(settings.jupiter_price_base, params={"ids": SOL_MINT})
             r.raise_for_status()
             data = r.json()
             self._sol_usd = float(data[SOL_MINT]["usdPrice"])

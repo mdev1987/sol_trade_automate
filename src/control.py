@@ -2,9 +2,10 @@
 the Telegram command bot. Clearing the gate pauses trading gracefully:
 no new trades start; an in-flight trade runs to completion.
 
-`request_shutdown()` also wakes idle loops blocked on `wait()` so a graceful
-shutdown exits immediately instead of waiting for the gate to reopen.
+`request_shutdown()` latches shutdown and wakes idle loops blocked on `wait()`
+(without touching the started flag, so a paused gate stays paused).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -28,9 +29,8 @@ class TradeGate:
         self._event.clear()
 
     def request_shutdown(self) -> None:
-        """Latch shutdown and wake any loop blocked on wait()."""
+        """Latch shutdown and wake any loop blocked on wait() within 1s."""
         self._shutdown = True
-        self._event.set()
 
     @property
     def shutdown(self) -> bool:
@@ -40,5 +40,9 @@ class TradeGate:
         return self._event.is_set()
 
     async def wait(self) -> None:
-        """Block until the gate is open or shutdown is requested."""
-        await self._event.wait()
+        """Block until the gate is open or shutdown is requested (≤1s wake)."""
+        while not self._shutdown and not self._event.is_set():
+            try:
+                await asyncio.wait_for(self._event.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
+                pass  # re-check shutdown latch

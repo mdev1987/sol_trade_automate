@@ -1,6 +1,7 @@
 """
 Monitoring & logging — bot.log, journal.json, trade_log.csv, Telegram (optional).
 """
+
 from __future__ import annotations
 
 import csv
@@ -8,14 +9,14 @@ import json
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any, Optional
-
+from typing import Any
 
 LOG_FILE = "bot.log"
 JOURNAL_FILE = "journal.json"
 TRADE_LOG_FILE = "trade_log.csv"
 
 # --- logging setup ---------------------------------------------------------
+
 
 def setup_logging(level: int = logging.INFO) -> logging.Logger:
     logger = logging.getLogger("sniper_bot")
@@ -38,6 +39,7 @@ log = setup_logging()
 
 # --- trade journal ----------------------------------------------------------
 
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -52,8 +54,19 @@ def append_journal(entry: dict[str, Any]) -> None:
 def append_trade_log(row: dict[str, Any]) -> None:
     """Append a completed trade to trade_log.csv."""
     fieldnames = [
-        "ts", "mint", "symbol", "action", "side", "amount_usd", "entry_price",
-        "exit_price", "pnl_usd", "exit_reason", "score", "signature", "dry_run",
+        "ts",
+        "mint",
+        "symbol",
+        "action",
+        "side",
+        "amount_usd",
+        "entry_price",
+        "exit_price",
+        "pnl_usd",
+        "exit_reason",
+        "score",
+        "signature",
+        "dry_run",
     ]
     new_file = not os.path.exists(TRADE_LOG_FILE)
     with open(TRADE_LOG_FILE, "a", newline="", encoding="utf-8") as f:

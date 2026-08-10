@@ -4,11 +4,12 @@ DexScreener REST client — price / liquidity / volume / txns.
 Rate limit: 60 requests/minute → throttle to ~1.1s between calls.
 Docs: bot_plan/docs/dex_screener_reference.md
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import httpx
@@ -57,8 +58,8 @@ class Pair:
         base = p.get("baseToken") or {}
         quote = p.get("quoteToken") or {}
         txns = (p.get("txns") or {}).get("m5") or {}
-        volume = (p.get("volume") or {})
-        liq = (p.get("liquidity") or {})
+        volume = p.get("volume") or {}
+        liq = p.get("liquidity") or {}
         return cls(
             pair_address=p.get("pairAddress", ""),
             dex_id=p.get("dexId", ""),

@@ -4,6 +4,7 @@ Token scoring — 0..100. Higher score = stronger buy signal.
 
 Weights: Freshness 10 + Volume 20 + Buy pressure 25 + Fair launch 10 + Liquidity 15.
 """
+
 from __future__ import annotations
 
 import math
@@ -94,7 +95,7 @@ def score_feed(launch: TokenLaunch) -> float:
     )
 
     s = 0.0
-    s += 10.0                       # freshness: at-launch entry
+    s += 10.0  # freshness: at-launch entry
     s += score_fair_launch(launch)  # 0-10 dev fairness
 
     # volume proxy (25): meaningful-but-not-whale initial buy = full points
