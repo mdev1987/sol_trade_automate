@@ -3,26 +3,23 @@
 IMPORTANT: `price_monitor.PriceMonitor` is patched BEFORE `bot` is imported, so
 `bot.execute_trade` sees the fake monitor (it imports the name at module load).
 """
-
-import pathlib
-import sys
-
+import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 import asyncio
 
 from config import settings
-
 settings.dry_run = True  # force dry-run regardless of .env
+
+from data_stream import TokenLaunch
+from dexscreener import Pair
+from token_scanner import Candidate
+from risk_management import RiskManager
+from stats import TradeStats
+from jupiter_swap import SwapResult
 
 # --- fake PriceMonitor exit (avoid 8s polling) — MUST precede `from bot import ...` ---
 import price_monitor
-from data_stream import TokenLaunch
-from dexscreener import Pair
-from jupiter_swap import SwapResult
-from risk_management import RiskManager
-from stats import TradeStats
-from token_scanner import Candidate
 
 
 class FakeMonitor:
@@ -46,40 +43,21 @@ from telegram_bot import TelegramNotifier
 
 def make_launch():
     return TokenLaunch(
-        mint="TestMintPump",
-        name="Test Coin",
-        symbol="TST",
-        uri="https://x",
-        creator="Creator",
-        signature="sig1",
-        initial_buy_tokens=100_000_000,
-        dev_sol=0.5,
-        market_cap_sol=32.7,
-        quote_mint="So11111111111111111111111111111111111111112",
-        is_mayhem_mode=False,
-        is_cashback_enabled=False,
+        mint="TestMintPump", name="Test Coin", symbol="TST", uri="https://x",
+        creator="Creator", signature="sig1", initial_buy_tokens=100_000_000,
+        dev_sol=0.5, market_cap_sol=32.7, quote_mint="So11111111111111111111111111111111111111112",
+        is_mayhem_mode=False, is_cashback_enabled=False,
         source="pumpdev",
     )
 
 
 def make_pair():
     import time
-
     return Pair(
-        pair_address="PairAddr",
-        dex_id="pump",
-        base_mint="TestMintPump",
-        base_symbol="TST",
-        quote_symbol="SOL",
-        price_usd=0.0001,
-        price_native=1e-6,
-        liquidity_usd=20_000.0,
-        volume_m5=1_500.0,
-        txns_m5_buys=20,
-        txns_m5_sells=8,
-        market_cap=100_000.0,
-        fdv=100_000.0,
-        pair_created_at=int(time.time() * 1000) - 60_000,
+        pair_address="PairAddr", dex_id="pump", base_mint="TestMintPump",
+        base_symbol="TST", quote_symbol="SOL", price_usd=0.0001, price_native=1e-6,
+        liquidity_usd=20_000.0, volume_m5=1_500.0, txns_m5_buys=20, txns_m5_sells=8,
+        market_cap=100_000.0, fdv=100_000.0, pair_created_at=int(time.time()*1000)-60_000,
     )
 
 
@@ -92,11 +70,11 @@ class FakeJupiter:
     async def buy(self, mint, amount_usd, liquidity_usd=0.0):
         print(f"  [fake buy] {mint} ${amount_usd} liq=${liquidity_usd}")
         if not self.buy_ok:
-            return SwapResult(False, "", int(amount_usd * 1e6), 0, "fake buy failure")
-        return SwapResult(True, "fake-buy-sig", int(amount_usd * 1e6), 100_000_000, "")
+            return SwapResult(False, "", int(amount_usd*1e6), 0, "fake buy failure")
+        return SwapResult(True, "fake-buy-sig", int(amount_usd*1e6), 100_000_000, "")
 
     async def sell(self, mint, token_amount_raw):
-        print(f"  [fake sell] {mint} {token_amount_raw} raw -> ${self.sell_output / 1e6:.2f}")
+        print(f"  [fake sell] {mint} {token_amount_raw} raw -> ${self.sell_output/1e6:.2f}")
         return SwapResult(True, "fake-sell-sig", token_amount_raw, self.sell_output, "")
 
     async def price_usd(self, mint):
@@ -125,9 +103,8 @@ async def main():
     risk = RiskManager()
     risk.play_amount = 2.0
     stats = TradeStats(dry_run=True)
-    won, reason = await execute_trade(
-        cand, risk, FakeJupiter(), FakeDexScreener(), TelegramNotifier(), stats
-    )
+    won, reason = await execute_trade(cand, risk, FakeJupiter(), FakeDexScreener(),
+                                      TelegramNotifier(), stats)
     print(f"  result: won={won} reason={reason} next_play=${risk.play_amount}")
     assert won and reason == "take_profit"
     assert risk.play_amount == 2.4, risk.play_amount  # 60% of $4 proceeds
@@ -143,29 +120,49 @@ async def main():
     FakeMonitor.exit_signal = "stop_loss"
     risk2 = RiskManager()
     risk2.play_amount = 2.0
-    won2, reason2 = await execute_trade(
-        cand,
-        risk2,
-        FakeJupiter(sell_output=1_600_000),
-        FakeDexScreener(),
-        TelegramNotifier(),
-        TradeStats(dry_run=True),
-    )
+    won2, reason2 = await execute_trade(cand, risk2, FakeJupiter(sell_output=1_600_000),
+                                        FakeDexScreener(), TelegramNotifier(),
+                                        TradeStats(dry_run=True))
     assert not won2 and reason2 == "stop_loss"
     assert risk2.play_amount == 1.64, risk2.play_amount  # 2.0 * 0.82
     print("[OK] loss path -> position shrink")
 
     # --- buy failure path: trade aborts cleanly, no crash ---
-    won3, reason3 = await execute_trade(
-        cand,
-        RiskManager(),
-        FakeJupiter(buy_ok=False),
-        FakeDexScreener(),
-        TelegramNotifier(),
-        TradeStats(dry_run=True),
-    )
+    won3, reason3 = await execute_trade(cand, RiskManager(), FakeJupiter(buy_ok=False),
+                                        FakeDexScreener(), TelegramNotifier(),
+                                        TradeStats(dry_run=True))
     assert not won3 and reason3 == "buy_failed", (won3, reason3)
     print("[OK] buy-failure path aborts cleanly")
+
+    # --- regression: dry-run paper path (no real fill) — simulated proceeds ---
+    # FakeJupiter.buy returns the paper-quote sentinel => simulated token amount
+    import bot as bot_mod  # for PAPER_QUOTE_SENTINEL constant
+    class PaperJupiter(FakeJupiter):
+        async def buy(self, mint, amount_usd, liquidity_usd=0.0):
+            print(f"  [paper buy] {mint} ${amount_usd} liq=${liquidity_usd}")
+            return SwapResult(False, "", 0, 0, bot_mod.PAPER_QUOTE_SENTINEL)
+    FakeMonitor.exit_signal = "stop_loss"
+    risk5 = RiskManager(); risk5.play_amount = 2.0
+    s5 = TradeStats(dry_run=True)
+    won5, reason5 = await execute_trade(cand, risk5, PaperJupiter(), FakeDexScreener(),
+                                        TelegramNotifier(), s5)
+    assert not won5 and reason5 == "stop_loss", (won5, reason5)
+    assert s5.trades == 1 and s5.losses == 1, "simulated loss must be recorded"
+    assert s5.balance_usd == 2.0 - 2.0 + 1.64, s5.balance_usd  # proceeds = 2.0*0.82
+    assert risk5.play_amount == 1.64, risk5.play_amount
+    print("[OK] regression: dry-run paper sell proceeds (amount*0.82)")
+
+    # --- regression: pair with liquidity_usd=None must not crash the quote ---
+    class NoLiqDex(FakeDexScreener):
+        async def token_pairs(self, mint):
+            p = make_pair()
+            p.liquidity_usd = None
+            return [p]
+    FakeMonitor.exit_signal = "take_profit"
+    won6, reason6 = await execute_trade(cand, RiskManager(), FakeJupiter(), NoLiqDex(),
+                                        TelegramNotifier(), TradeStats(dry_run=True))
+    assert won6 and reason6 == "take_profit", (won6, reason6)
+    print("[OK] regression: liquidity_usd=None falls back to 0 slippage tier")
 
     # --- daily loss kill switch (hardening v2) ---
     s4 = TradeStats(dry_run=True)

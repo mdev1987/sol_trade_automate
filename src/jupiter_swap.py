@@ -407,7 +407,7 @@ class JupiterSwap:
         briefly to collapse simultaneous evaluations of the same token.
         ``force=True`` bypasses the cache (used when a cached quote is stale).
         """
-        slippage = self._qcfg.slippage_for(max(liquidity_usd, 0.0))
+        slippage = self._qcfg.slippage_for(max(liquidity_usd or 0.0, 0.0))
         key = (mint, amount_raw, slippage)
 
         if not force:

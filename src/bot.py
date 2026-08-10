@@ -61,7 +61,7 @@ async def _estimate_entry_price(
     Returns (price_usd, liquidity_usd).
     """
     price = pair.price_usd if pair else None
-    liquidity = pair.liquidity_usd if pair else 0.0
+    liquidity = (pair.liquidity_usd or 0.0) if pair else 0.0
     if price is None:
         price = await jupiter.price_usd(mint)
     if price is None and live_feed is not None:
@@ -239,10 +239,12 @@ async def execute_trade(
     if not simulated:
         proceeds_usd = sell_result.output_amount / (10**USDC_DECIMALS)
     else:
-        factor = _DRY_PROCEEDS.get(exit_reason)
-        if factor is None:
+        factor_fn = _DRY_PROCEEDS.get(exit_reason)
+        if factor_fn is None:
             # max_hold / shutdown: sell at the last known price
             factor = (signal.price_usd / entry_price) if signal.price_usd else 0.0
+        else:
+            factor = factor_fn(settings, signal)
         proceeds_usd = amount * factor
     pnl_usd = proceeds_usd - amount
     won = sell_result.success and proceeds_usd > amount
