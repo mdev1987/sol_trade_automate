@@ -176,6 +176,22 @@ async def main():
     assert s5.next_day_reset_seconds() > 0, "UTC midnight reset"
     print("[OK] daily-loss kill switch + daily pnl tracking")
 
+    # --- dev-reputation veto aborts BEFORE the buy (no position, stats) ---
+    class BlockingDevRep:
+        async def veto(self, launch):
+            return True, "serial launcher: 5 pump.fun creates in 24h"
+
+    st_veto = TradeStats(dry_run=True)
+    bal_before = st_veto.balance_usd
+    won_v, reason_v = await execute_trade(
+        cand, RiskManager(), FakeJupiter(), NoLiqDex(),
+        TelegramNotifier(), st_veto, dev_rep=BlockingDevRep())
+    assert not won_v and reason_v.startswith("dev_veto:"), reason_v
+    assert st_veto.dev_vetoes == 1, st_veto.dev_vetoes
+    assert st_veto.balance_usd == bal_before, "no buy -> bankroll untouched"
+    assert not st_veto.in_trade, "no position opened"
+    print("[OK] dev-rep veto aborts before buy (bankroll untouched, stats recorded)")
+
     print("\nINTEGRATION TEST PASSED")
 
 

@@ -29,6 +29,7 @@ class TradeStats:
     realized_pnl_usd: float = 0.0
     buy_failures: int = 0
     sell_failures: int = 0
+    dev_vetoes: int = 0  # launches blocked by the Helius dev-reputation veto
     last_trade: dict = field(default_factory=dict)
     active_position: dict = field(default_factory=dict)
     exit_counts: dict = field(default_factory=dict)  # reason -> count
@@ -110,6 +111,11 @@ class TradeStats:
         self.buy_failures += 1
         self.last_trade = {"symbol": symbol, "won": False, "error": error}
 
+    def record_dev_veto(self, symbol: str, reason: str) -> None:
+        """A launch was blocked by the dev-reputation check (no buy attempted)."""
+        self.dev_vetoes += 1
+        self.last_trade = {"symbol": symbol, "won": False, "error": f"dev_veto:{reason}"}
+
     def record_sell_failure(self, symbol: str, error: str) -> None:
         self.sell_failures += 1
         self.last_trade = {"symbol": symbol, "won": False, "error": error}
@@ -147,6 +153,7 @@ class TradeStats:
             f"💰 Balance: `{self._fmt_usd(self.balance_usd)}`",
             f"📈 Trades: `{self.trades}`  (✅ `{self.wins}` / ❌ `{self.losses}`)",
             f"🎯 Winrate: `{self.winrate * 100:.1f}%`",
+            f"🚫 Dev vetoes: `{self.dev_vetoes}`",
             f"💵 Realized PnL: `{self._fmt_usd(self.realized_pnl_usd)}`",
             f"📅 Today: `{self._fmt_usd(self.daily_pnl_usd)}`",
             f"⚠️ Buy fails: `{self.buy_failures}` · Sell fails: `{self.sell_failures}`",

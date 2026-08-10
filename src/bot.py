@@ -25,6 +25,7 @@ from typing import Optional
 
 from config import USDC_DECIMALS, settings
 from control import TradeGate
+from dev_rep import DevReputationClient
 from dexscreener import DexScreenerClient
 from jupiter_swap import JupiterSwap, SwapResult
 from live_feed import LivePriceFeed
@@ -93,6 +94,7 @@ async def execute_trade(
     stats: Optional[TradeStats] = None,
     live_feed: Optional[LivePriceFeed] = None,
     stop_check=None,
+    dev_rep: Optional[DevReputationClient] = None,
 ) -> tuple[bool, str]:
     """stop_check: callable()->bool — monitor exits "shutdown" when True so a
     graceful stop sells the open position instead of hard-cancelling it."""
@@ -108,11 +110,36 @@ async def execute_trade(
         candidate.score,
     )
 
+    # --- dev-reputation veto (parallel with the price estimate; fail-open) ---
+    veto_task = (
+        asyncio.create_task(dev_rep.veto(candidate.launch)) if dev_rep is not None else None
+    )
+
     # --- entry price estimate BEFORE the buy (fast, one DexScreener call) ---
     pair = await _quick_pair(ds, mint)
     entry_price, liquidity_usd = await _estimate_entry_price(
         mint, candidate.launch, jupiter, ds, live_feed, pair
     )
+
+    if veto_task is not None:
+        blocked, veto_reason = await veto_task
+        if blocked:
+            log.info("DEV-VETO %s (%s) — %s", candidate.launch.symbol, mint[:8], veto_reason)
+            append_journal(
+                {
+                    "type": "trade",
+                    "mint": mint,
+                    "symbol": candidate.launch.symbol,
+                    "side": "buy",
+                    "status": "failed",
+                    "error": f"dev_veto:{veto_reason}",
+                }
+            )
+            if stats:
+                stats.record_dev_veto(candidate.launch.symbol, veto_reason)
+            await notifier.send_alert("🚫 DEV VETO", f"{candidate.launch.symbol} — {veto_reason}")
+            return False, f"dev_veto:{veto_reason}"
+
     if entry_price is None or entry_price <= 0:
         log.error("No entry price for %s — aborting trade", candidate.launch.symbol)
         append_journal(
@@ -355,6 +382,7 @@ async def trade_loop(
     stats: Optional[TradeStats] = None,
     notifier: Optional[TelegramNotifier] = None,
     live_feed: Optional[LivePriceFeed] = None,
+    dev_rep: Optional[DevReputationClient] = None,
 ) -> None:
     """Consume validated candidates forever, one trade at a time.
 
@@ -406,6 +434,7 @@ async def trade_loop(
                     stats,
                     live_feed,
                     stop_check=lambda: gate.shutdown,
+                    dev_rep=dev_rep,
                 )
                 if stats is not None:
                     stats.quote_gate = jupiter.quote_summary()

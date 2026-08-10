@@ -88,6 +88,17 @@ def _load_keypair() -> Optional[Keypair]:
         return None
 
 
+def _parse_helius_key(url: str) -> str:
+    """Extract api-key from a Helius RPC URL (https://.../?api-key=KEY) if present."""
+    try:
+        from urllib.parse import parse_qs, urlparse
+
+        q = parse_qs(urlparse(url).query)
+        return (q.get("api-key") or [""])[0]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 @dataclass
 class Settings:
     # --- trade parameters ---
@@ -178,6 +189,24 @@ class Settings:
             slippage_tiers=_parse_slippage_tiers(os.getenv("SLIPPAGE_TIERS")),
         )
     )
+
+    # --- helius dev-reputation veto (read-only signal, fail-open) ---
+    # Helius enhanced-transactions API key; falls back to the api-key embedded
+    # in SOLANA_RPC_URL so no extra secret is needed if that URL is Helius.
+    helius_api_key: str = field(
+        default_factory=lambda: os.getenv("HELIUS_API_KEY")
+        or _parse_helius_key(os.getenv("SOLANA_RPC_URL", ""))
+    )
+    dev_rep_enabled: bool = field(default_factory=lambda: _get_bool("DEV_REP_ENABLED", True))
+    # veto a dev wallet that created >= N pump.fun tokens in the last 24h
+    dev_rep_max_creates_24h: int = field(default_factory=lambda: _get_int("DEV_REP_MAX_CREATES_24H", 3))
+    # veto wallets younger than this (hours); 0 = disabled (default: off —
+    # brand-new wallets are common on pump.fun, this is the weakest signal)
+    dev_rep_min_age_hours: float = field(default_factory=lambda: _get_float("DEV_REP_MIN_AGE_HOURS", 0.0))
+    # per-wallet verdict cache + HTTP timeout (the lookup runs concurrently
+    # with the entry-price estimate, so latency impact is ~0 in the common case)
+    dev_rep_cache_ttl_min: float = field(default_factory=lambda: _get_float("DEV_REP_CACHE_TTL_MIN", 10.0))
+    dev_rep_timeout_s: float = field(default_factory=lambda: _get_float("DEV_REP_TIMEOUT_S", 2.5))
 
     # --- telegram alerts / reporting ---
     telegram_bot_token: str = field(

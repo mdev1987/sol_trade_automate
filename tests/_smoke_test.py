@@ -2,6 +2,7 @@
 
 import pathlib
 import sys
+import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import sys
@@ -237,4 +238,79 @@ sig = asyncio.run(_resilience_case())
 assert not sig.exit, "network failure -> keep holding, no crash"
 print("[OK] monitor network resilience (DNS failure -> hold, no crash)")
 
-print("\\nALL SMOKE TESTS PASSED")
+# 11) dev-reputation veto (Helius) — serial launcher blocked, clean passes,
+#     network failure fails OPEN, per-wallet cache
+import httpx as _httpx
+from dev_rep import DevReputationClient
+
+def _mk_launch(creator):
+    from data_stream import TokenLaunch
+    return TokenLaunch(mint="DevMint", name="T", symbol="T", uri="", creator=creator,
+                       signature="", initial_buy_tokens=0.0, dev_sol=None,
+                       market_cap_sol=None, quote_mint="", is_mayhem_mode=False,
+                       is_cashback_enabled=False, source="pumpapi")
+
+def _tx(ttype, ts, source="PUMP_FUN", mints=(), transfers=()):
+    tx = {"type": ttype, "timestamp": ts, "source": source,
+          "accountData": [{"tokenBalanceChanges": [{"mint": m} for m in mints]}],
+          "tokenTransfers": [{"mint": m, "fromUserAccount": f, "toUserAccount": t}
+                             for m, f, t in transfers]}
+    return tx
+
+NOW = time.time()
+SERIAL_TXS = [_tx("CREATE", NOW - i * 600) for i in range(4)]  # 4 creates in 4h
+CLEAN_TXS = [_tx("CREATE", NOW - 7200, mints=("CleanMint",))]
+DUMP_TXS = [
+    _tx("CREATE", NOW - 5000, mints=("DumpMint",)),
+    _tx("SWAP", NOW - 1000, transfers=[("DumpMint", "DumpDev", "Somebody")]),
+]
+
+def _client_with(txs):
+    def handler(request):
+        return _httpx.Response(200, json=txs)
+    dr = DevReputationClient(api_key="test", timeout_s=2.0,
+                             transport=_httpx.MockTransport(handler))
+    return dr
+
+async def _veto_case(txs, creator):
+    dr = _client_with(txs)
+    try:
+        return await dr.veto(_mk_launch(creator))
+    finally:
+        await dr.close()
+
+# serial launcher -> blocked
+blk, reason = asyncio.run(_veto_case(SERIAL_TXS, "SerialDev"))
+assert blk and "serial launcher" in reason, (blk, reason)
+print("[OK] dev-rep: serial launcher vetoed (%s)" % reason)
+# clean wallet -> pass
+blk, reason = asyncio.run(_veto_case(CLEAN_TXS, "CleanDev"))
+assert not blk, reason
+print("[OK] dev-rep: clean wallet passes")
+# dump evidence -> blocked
+blk, reason = asyncio.run(_veto_case(DUMP_TXS, "DumpDev"))
+assert blk and "dumped" in reason, (blk, reason)
+print("[OK] dev-rep: prior-dump vetoed")
+# fail-open: transport raises -> pass, no exception
+def boom(request):
+    raise _httpx.ConnectError("DNS blip")
+dr = DevReputationClient(api_key="test", timeout_s=1.0,
+                         transport=_httpx.MockTransport(boom))
+blk, reason = asyncio.run(dr.veto(_mk_launch("FlakyDev")))
+assert not blk and not reason
+asyncio.run(dr.close())
+print("[OK] dev-rep: network failure fails OPEN (never blocks trading)")
+# cache: second veto for same wallet does not refetch
+calls = {"n": 0}
+def counting(request):
+    calls["n"] += 1
+    return _httpx.Response(200, json=CLEAN_TXS)
+dr = DevReputationClient(api_key="test", timeout_s=2.0,
+                         transport=_httpx.MockTransport(counting))
+l1 = asyncio.run(dr.veto(_mk_launch("CachedDev")))
+l2 = asyncio.run(dr.veto(_mk_launch("CachedDev")))
+assert calls["n"] == 1, calls
+asyncio.run(dr.close())
+print("[OK] dev-rep: per-wallet cache (1 fetch for 2 veto calls)")
+
+print("\nALL SMOKE TESTS PASSED")

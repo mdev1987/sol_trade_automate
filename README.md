@@ -61,8 +61,17 @@ Hardening v2 (all optional, sane defaults):
 | `STALE_EXIT_SEC` | `60` | dead-token exit: no live trades this long + no DexScreener pair → exit (frees the position slot) |
 | `STALE_EXIT_GRACE_SEC` | `15` | grace period after entry before the dead-token exit can fire |
 | `MAX_CANDIDATE_AGE_MIN` | `5` | drop queued candidates older than this at dequeue time |
+| `DEV_REP_ENABLED` | `true` | Helius dev-reputation veto (read-only, fail-open) |
+| `DEV_REP_MAX_CREATES_24H` | `3` | veto devs with ≥ N pump.fun creates in 24h (serial launchers) |
+| `DEV_REP_MIN_AGE_HOURS` | `0` | veto wallets younger than this; `0` = off (weakest signal) |
+| `DEV_REP_CACHE_TTL_MIN` | `10` | per-wallet verdict cache |
+| `DEV_REP_TIMEOUT_S` | `2.5` | lookup budget; runs parallel to the entry-price estimate |
 
-Optional: `SOLANA_RPC_URL` (Helius/Alchemy, optional reads only), `PUMPDEV_API_KEY`.
+Optional: `SOLANA_RPC_URL` (Helius/Alchemy, optional reads only), `PUMPDEV_API_KEY`,
+`HELIUS_API_KEY` (defaults to the `api-key` embedded in `SOLANA_RPC_URL` when that
+URL is Helius). The dev-reputation veto queries Helius enhanced transactions for
+the launch's dev wallet and blocks serial launchers / prior-dump wallets *before*
+the buy; any lookup error fails OPEN (trading never blocked by a flaky check).
 
 ## Run
 

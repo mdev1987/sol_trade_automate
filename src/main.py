@@ -26,6 +26,7 @@ import time as _t
 from bot import trade_loop
 from config import settings
 from control import TradeGate
+from dev_rep import DevReputationClient
 from data_stream import LaunchFeedRouter
 from live_feed import LivePriceFeed
 from monitoring import setup_logging
@@ -116,7 +117,13 @@ async def main() -> None:
     await live_feed.start()
 
     scanner_task = asyncio.create_task(scan_loop(queue, gate, router), name="scanner")
-    bot_task = asyncio.create_task(trade_loop(queue, gate, stats, notifier, live_feed), name="bot")
+    dev_rep = None
+    if settings.dev_rep_enabled and settings.helius_api_key:
+        dev_rep = DevReputationClient(settings.helius_api_key)
+        log.info("Dev-reputation veto enabled (Helius, read-only, fail-open)")
+    bot_task = asyncio.create_task(
+        trade_loop(queue, gate, stats, notifier, live_feed, dev_rep=dev_rep), name="bot"
+    )
     heartbeat_task = asyncio.create_task(heartbeat_loop(notifier, stats, t0), name="heartbeat")
     for t in (scanner_task, bot_task, heartbeat_task):
         t.add_done_callback(_log_task_error)
@@ -140,6 +147,8 @@ async def main() -> None:
     await asyncio.gather(scanner_task, bot_task, heartbeat_task, return_exceptions=True)
     await live_feed.stop()
     await router.stop()
+    if dev_rep is not None:
+        await dev_rep.close()
     await notifier.send_stopped(
         _t.monotonic() - t0,
         stats.trades,
