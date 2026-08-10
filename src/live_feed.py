@@ -48,6 +48,7 @@ class LivePriceFeed:
         self._sol_usd_ts = 0.0
         self._task: asyncio.Task | None = None
         self._client = httpx.AsyncClient(timeout=15.0)
+        self._connected_at = 0.0  # monotonic ts of the current stream connection
 
     # ------------------------------------------------------------- lifecycle
     async def start(self) -> None:
@@ -77,6 +78,7 @@ class LivePriceFeed:
         delay = RECONNECT_BASE_S
         while True:
             try:
+                self._connected_at = time.monotonic()
                 async for mint, price in trades:
                     self._prices[mint] = (float(price), time.monotonic())
                     self._prune()
@@ -95,6 +97,7 @@ class LivePriceFeed:
             try:
                 async with websockets.connect(self.url, open_timeout=15) as ws:
                     delay = RECONNECT_BASE_S
+                    self._connected_at = time.monotonic()
                     async for message in ws:
                         try:
                             event = json.loads(message)
@@ -133,6 +136,15 @@ class LivePriceFeed:
         if hit is None or time.monotonic() - hit[1] > max_age_s:
             return None
         return hit[0]
+
+    def last_trade_age(self, mint: str) -> float | None:
+        """Seconds since the last buy/sell event for mint (None = never seen)."""
+        hit = self._prices.get(mint)
+        return (time.monotonic() - hit[1]) if hit else None
+
+    def feed_age(self) -> float | None:
+        """Seconds since the current stream connection was established."""
+        return time.monotonic() - self._connected_at if self._connected_at else None
 
     async def sol_usd(self) -> float | None:
         """SOL price in USD (cached 60s; None on failure)."""

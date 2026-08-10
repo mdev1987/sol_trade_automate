@@ -366,6 +366,19 @@ async def trade_loop(
             candidate = await _queue_get(queue, gate)
             if candidate is None:
                 break  # shutdown while waiting for a candidate
+            # queue-backlog aging: a candidate this old has long lost its edge
+            if candidate.launch.created_at:
+                age_s = _t.time() - candidate.launch.created_at
+                if age_s > settings.max_candidate_age_min * 60:
+                    if stats is not None:
+                        stats.aged_out += 1
+                    log.info("SKIP %s — candidate %.0fs old > %.0fs max (queue backlog)",
+                             candidate.launch.symbol, age_s,
+                             settings.max_candidate_age_min * 60)
+                    append_journal({"type": "scan", "mint": candidate.launch.mint,
+                                    "symbol": candidate.launch.symbol,
+                                    "status": "aged_out", "age_s": round(age_s, 1)})
+                    continue
             try:
                 await execute_trade(
                     candidate,

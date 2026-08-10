@@ -124,21 +124,36 @@ async def scan_loop(
                     log.info("Gate shutdown — scanner exiting")
                     break
             cycle_start = time.monotonic()
+            stats = {"launches": 0, "qualified": 0, "rug_skips": 0,
+                     "filter_skips": 0, "score_skips": 0}
             log.info("=== New scan cycle started (window %d min) ===", settings.max_scan_window_min)
             async for launch in stream.launches():
                 if gate is not None and (not gate.is_started() or gate.shutdown):
                     log.info("Gate closed — scanner paused")
                     break
+                stats["launches"] += 1
                 try:
                     candidate = await process_launch(launch)
                     if candidate is not None:
+                        stats["qualified"] += 1
                         await queue.put(candidate)
+                    else:
+                        # classify the skip for the cycle report
+                        report = rug_check(launch, None, launch.raw)
+                        if not report.passed:
+                            stats["rug_skips"] += 1
+                        else:
+                            passed, _ = passes_feed_filters(launch)
+                            stats["filter_skips" if not passed else "score_skips"] += 1
                 except Exception:  # noqa: BLE001 — never kill the scanner
                     log.exception("Error processing launch %s", launch.mint)
                 # scan window expired? restart cycle
                 if time.monotonic() - cycle_start > settings.max_scan_window_min * 60:
                     log.info("Scan window expired — starting new cycle")
                     break
+            log.info("=== Cycle report: %d launches | %d qualified | %d rug | %d filter | %d score ===",
+                     stats["launches"], stats["qualified"], stats["rug_skips"],
+                     stats["filter_skips"], stats["score_skips"])
     finally:
         if own_router:
             await stream.stop()

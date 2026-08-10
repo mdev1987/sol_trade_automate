@@ -116,7 +116,19 @@ class Settings:
     # use the PumpAPI buy/sell stream for sub-second TP/SL triggers
     live_feed_exit: bool = field(default_factory=lambda: _get_bool("LIVE_FEED_EXIT", True))
     # minimum feed score for a launch to be queued (feed-data entry path)
-    min_score: float = field(default_factory=lambda: _get_float("MIN_SCORE", 40.0))
+    min_score: float = field(default_factory=lambda: _get_float("MIN_SCORE", 45.0))
+
+    # dead-token exit: exit when the live feed saw no trade for this mint for
+    # STALE_EXIT_SEC AND no DexScreener pair ever appeared (frees the single
+    # position slot — most pump launches die within a minute)
+    stale_exit_sec: float = field(default_factory=lambda: _get_float("STALE_EXIT_SEC", 60.0))
+    stale_exit_grace_sec: float = field(
+        default_factory=lambda: _get_float("STALE_EXIT_GRACE_SEC", 15.0)
+    )
+    # drop queued candidates older than this at dequeue time (queue backlog)
+    max_candidate_age_min: float = field(
+        default_factory=lambda: _get_float("MAX_CANDIDATE_AGE_MIN", 5.0)
+    )
     # periodic /status heartbeat card interval (minutes; 0 = disabled)
     status_interval_min: int = field(default_factory=lambda: _get_int("STATUS_INTERVAL_MIN", 15))
 

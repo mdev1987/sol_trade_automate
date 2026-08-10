@@ -11,6 +11,9 @@ from config import settings
 
 assert settings.starting_amount == 2.0
 assert settings.starting_balance == 20.0  # paper wallet bankroll
+assert settings.min_score == 45.0          # feed-score gate (tightened)
+assert settings.stale_exit_sec == 60.0
+assert settings.max_candidate_age_min == 5.0
 assert settings.stop_loss == 0.82
 assert settings.take_profit == 2.0
 assert settings.slippage_bps == 150
@@ -158,5 +161,52 @@ st.daily_pnl_usd = -10.5
 assert st.daily_loss_limit_hit()
 assert st.next_day_reset_seconds() > 0
 print("[OK] daily loss limit (10.0) + UTC reset")
+
+# 9) dead-token exit (no_trades) — real PriceMonitor with fakes
+import asyncio
+import price_monitor as pm_mod
+from jupiter_swap import JupiterSwap
+
+class FakeLiveFeedDead:
+    def __init__(self, last_age, feed_age=None):
+        self._last = last_age
+        self._fa = feed_age
+    async def price_usd(self, mint, max_age_s=10.0):
+        return None
+    def last_trade_age(self, mint):
+        return self._last
+    def feed_age(self):
+        return self._fa
+
+class FakeDSEmpty:
+    async def token_pairs(self, mint):
+        return []
+    def pick_pair(self, pairs):
+        return pairs[0] if pairs else None
+
+class FakeJupNoPrice:
+    async def price_usd(self, mint):
+        return None
+
+async def _stale_case(last_age, feed_age, grace=0.0):
+    old_grace = settings.stale_exit_grace_sec
+    settings.stale_exit_grace_sec = grace
+    try:
+        mon = pm_mod.PriceMonitor(FakeDSEmpty(), FakeJupNoPrice(),
+                                  entry_price_usd=1e-6, mint="DeadMint",
+                                  live_feed=FakeLiveFeedDead(last_age, feed_age))
+        sig = await mon.check()
+    finally:
+        settings.stale_exit_grace_sec = old_grace
+    return sig
+
+sig = asyncio.run(_stale_case(last_age=120.0, feed_age=300.0, grace=0.0))
+assert sig.exit and sig.reason == "no_trades", sig
+sig2 = asyncio.run(_stale_case(last_age=5.0, feed_age=300.0, grace=0.0))
+assert not sig2.exit, "recent trade -> keep holding"
+# never seen a trade, but feed just reconnected (feed_age < grace+stale) -> hold
+sig3 = asyncio.run(_stale_case(last_age=None, feed_age=10.0, grace=0.0))
+assert not sig3.exit, "feed reconnected -> no false exit"
+print("[OK] dead-token exit (no_trades: stale->exit, recent->hold, reconnect->hold)")
 
 print("\\nALL SMOKE TESTS PASSED")

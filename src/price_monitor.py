@@ -32,7 +32,7 @@ LIVE_TICK_S = 1.0  # fast loop when a fresh live price exists
 @dataclass
 class ExitSignal:
     exit: bool
-    reason: str  # "take_profit"|"stop_loss"|"dead_pool"|"max_hold"|"shutdown"|"none"
+    reason: str  # "take_profit"|"stop_loss"|"dead_pool"|"no_trades"|"max_hold"|"shutdown"|"none"
     price_usd: float | None
     liquidity_usd: float | None
 
@@ -59,6 +59,7 @@ class PriceMonitor:
         self.max_hold_s = settings.max_hold_min * 60.0
         self._last_ds = 0.0  # DexScreener throttle (poll_interval cadence)
         self._cached_liq: float | None = None
+        self._seen_pair = False  # a DexScreener pair ever appeared?
 
     async def current_pair(self) -> Pair | None:
         pairs = await self.ds.token_pairs(self.mint)
@@ -86,6 +87,7 @@ class PriceMonitor:
             pair = await self.current_pair()
             self._last_ds = time.monotonic()
             if pair is not None:
+                self._seen_pair = True
                 self._cached_liq = pair.liquidity_usd
                 if price_usd is None:
                     price_usd = pair.price_usd
@@ -94,9 +96,37 @@ class PriceMonitor:
             price_usd = await self.jupiter.price_usd(self.mint)
             if price_usd is not None:
                 log.info("DexScreener/live miss — Jupiter fallback price: %s", price_usd)
+        if self._stale_dead():
+            log.info("No live trades for %s — treating as dead (exit)", self.mint[:8])
+            return ExitSignal(True, "no_trades", price_usd, liquidity)
         if price_usd is None:
             return ExitSignal(False, "none", None, liquidity)
         return self._evaluate(price_usd, liquidity)
+
+    def _stale_dead(self) -> bool:
+        """Dead-token exit: no live trades for STALE_EXIT_SEC and no indexed pair.
+
+        Frees the single position slot — most pump launches never get a
+        DexScreener pair and stop trading within a minute. A token with an
+        indexed pair is handled by the dead_pool check instead. Disabled when
+        the live feed is off.
+        """
+        if self.live_feed is None:
+            return False
+        if time.monotonic() - self.started_at < settings.stale_exit_grace_sec:
+            return False
+        if self._seen_pair:
+            return False  # indexed pair → dead_pool/max_hold handle it
+        age = self.live_feed.last_trade_age(self.mint)
+        if age is None:
+            # never saw a trade for this mint — exit only if the feed has been
+            # listening the whole time (no recent reconnect that could have
+            # missed events)
+            feed_age = self.live_feed.feed_age()
+            if feed_age is None:
+                return False
+            return feed_age > settings.stale_exit_grace_sec + settings.stale_exit_sec
+        return age > settings.stale_exit_sec
 
     def _shutdown_pending(self) -> bool:
         return bool(self.stop_check and self.stop_check())

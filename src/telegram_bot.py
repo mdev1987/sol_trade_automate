@@ -19,6 +19,8 @@ Commands are only answered for the configured CHAT_ID.
 
 from __future__ import annotations
 
+import asyncio
+
 import logging
 from datetime import datetime, timezone
 from typing import Awaitable, Callable, Optional
@@ -84,8 +86,8 @@ class TelegramNotifier:
         if not getattr(self._bot, "_initialized", False):
             try:
                 await self._bot.initialize()
-            except Exception:  # noqa: BLE001
-                log.exception("bot initialize failed")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("bot initialize failed: %s", exc)
                 return False
         return True
 
@@ -137,19 +139,22 @@ class TelegramNotifier:
 
     # ------------------------------------------------------------- lifecycle
     async def test(self) -> bool:
-        """Verify the bot credentials against the API."""
+        """Verify the bot credentials against the API (retry with backoff)."""
         if not self._enabled or self._bot is None:
             log.info("[telegram] disabled")
             return False
-        try:
-            if not await self._bot_ready():
-                return False
-            me = await self._bot.get_me()
-            log.info("[telegram] connected as @%s", me.username)
-            return True
-        except Exception as exc:  # noqa: BLE001
-            log.warning("[telegram] connection failed: %s", exc)
-            return False
+        for attempt in range(3):
+            try:
+                if not await self._bot_ready():
+                    return False
+                me = await self._bot.get_me()
+                log.info("[telegram] connected as @%s", me.username)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                log.warning("[telegram] connection failed (attempt %d/3): %s",
+                            attempt + 1, exc)
+                await asyncio.sleep(2.0 * (attempt + 1))
+        return False
 
     async def send_startup(self, summary: str) -> None:
         """Startup card carrying the active config line."""

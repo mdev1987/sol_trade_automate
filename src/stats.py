@@ -33,6 +33,7 @@ class TradeStats:
     active_position: dict = field(default_factory=dict)
     exit_counts: dict = field(default_factory=dict)  # reason -> count
     quote_gate: str = ""  # jupiter quote summary
+    aged_out: int = 0  # queued candidates dropped for being too old
 
     # daily PnL tracking (UTC day) for the daily-loss kill switch
     day_key: str = field(default_factory=_utc_day)
@@ -149,6 +150,7 @@ class TradeStats:
             f"💵 Realized PnL: `{self._fmt_usd(self.realized_pnl_usd)}`",
             f"📅 Today: `{self._fmt_usd(self.daily_pnl_usd)}`",
             f"⚠️ Buy fails: `{self.buy_failures}` · Sell fails: `{self.sell_failures}`",
+            f"⏳ Aged out: `{self.aged_out}`",
             f"⏱ Uptime: `{self._uptime()}`",
         ]
         if self.active_position:
