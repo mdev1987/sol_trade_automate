@@ -110,7 +110,7 @@ async def main():
     assert risk.play_amount == 2.4, risk.play_amount  # 60% of $4 proceeds
     # stats: proceeds = 4_000_000 raw USDC / 1e6 = $4.0 ; pnl = 4.0 - 2.0 = +2.0
     assert stats.trades == 1 and stats.wins == 1 and stats.winrate == 1.0
-    assert stats.balance_usd == 4.0, stats.balance_usd  # 2.0 - 2.0 + 4.0
+    assert stats.balance_usd == 22.0, stats.balance_usd  # 20.0 bankroll - 2.0 + 4.0
     assert not stats.in_trade
     print("[OK] win path -> compounding + stats")
     print("--- status markdown preview ---")
@@ -148,7 +148,7 @@ async def main():
                                         TelegramNotifier(), s5)
     assert not won5 and reason5 == "stop_loss", (won5, reason5)
     assert s5.trades == 1 and s5.losses == 1, "simulated loss must be recorded"
-    assert s5.balance_usd == 2.0 - 2.0 + 1.64, s5.balance_usd  # proceeds = 2.0*0.82
+    assert s5.balance_usd == 20.0 - 2.0 + 1.64, s5.balance_usd  # proceeds = 2.0*0.82
     assert risk5.play_amount == 1.64, risk5.play_amount
     print("[OK] regression: dry-run paper sell proceeds (amount*0.82)")
 

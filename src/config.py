@@ -92,6 +92,9 @@ def _load_keypair() -> Optional[Keypair]:
 class Settings:
     # --- trade parameters ---
     starting_amount: float = field(default_factory=lambda: _get_float("STARTING_AMOUNT", 2.0))
+    # paper wallet initial bankroll (what /status balance starts at); position
+    # size stays STARTING_AMOUNT regardless
+    starting_balance: float = field(default_factory=lambda: _get_float("STARTING_BALANCE", 20.0))
     stop_loss: float = field(default_factory=lambda: _get_float("STOP_LOSS", 0.82))
     take_profit: float = field(default_factory=lambda: _get_float("TAKE_PROFIT", 2.0))
     slippage_bps: int = field(default_factory=lambda: _get_int("SLIPPAGE", 150))

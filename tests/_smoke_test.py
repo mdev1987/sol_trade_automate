@@ -10,6 +10,7 @@ import sys
 from config import settings
 
 assert settings.starting_amount == 2.0
+assert settings.starting_balance == 20.0  # paper wallet bankroll
 assert settings.stop_loss == 0.82
 assert settings.take_profit == 2.0
 assert settings.slippage_bps == 150

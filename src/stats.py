@@ -38,11 +38,11 @@ class TradeStats:
     day_key: str = field(default_factory=_utc_day)
     daily_pnl_usd: float = 0.0
 
+    # ------------------------------------------------------------------ state
     def __post_init__(self) -> None:
         if not self.balance_usd:
-            self.balance_usd = settings.starting_amount
+            self.balance_usd = settings.starting_balance
 
-    # ------------------------------------------------------------------ state
     @property
     def winrate(self) -> float:
         return (self.wins / self.trades) if self.trades else 0.0

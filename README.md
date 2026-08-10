@@ -44,6 +44,7 @@ Required to go live (`DRY_RUN=false`):
 
 | Var | Purpose |
 |---|---|
+| `STARTING_BALANCE` | `20` | paper wallet initial bankroll (`/status` balance start) |
 | `PRIVATE_KEY` | wallet keypair (base58) — **never your main wallet** |
 | `JUPITER_API_KEY` | free at https://developers.jup.ag/portal (FREE tier = 1 RPS) |
 | `BOT_TOKEN` / `CHAT_ID` | Telegram control + alerts (BotFather) |
