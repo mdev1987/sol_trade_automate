@@ -84,6 +84,10 @@ def main() -> None:
                     help="score gate (default: settings/45)")
     ap.add_argument("--fee-bps", type=float, default=100.0,
                     help="per-swap protocol fee in bps (pump.fun = 100 = 1 pct each side)")
+    ap.add_argument("--min-mult", type=float, default=0.0,
+                    help="skip fills unless price/create-price >= this (momentum gate)")
+    ap.add_argument("--max-mult", type=float, default=0.0,
+                    help="skip fills when price/create-price exceeds this (0 = off)")
     ap.add_argument("--take-profit", type=float, default=None)
     ap.add_argument("--stop-loss", type=float, default=None)
     args = ap.parse_args()
@@ -137,7 +141,9 @@ def main() -> None:
             "tp": fill_price * (args.take_profit or settings.take_profit),
             "sl": fill_price * (args.stop_loss or settings.stop_loss),
             "entered_at": ts_s, "last_price": fill_price,
-            "last_liq": liq, "last_trade_ts": ts_s,
+            "entry_liq": liq, "last_liq": liq, "last_trade_ts": ts_s,
+            # momentum at fill: fill price vs the create event price (SOL)
+            "entry_mult": fill_price / max(launch.raw.get("price") or 0.0, 1e-30),
         }
         armed = None
 
@@ -152,6 +158,8 @@ def main() -> None:
         trades.append({
             "ts": round(ts_s, 1), "symbol": p["symbol"], "mint": p["mint"],
             "score": round(p["score"], 1), "entry_usd": round(p["entry_usd"], 8),
+            "entry_liq": round(p.get("entry_liq", 0.0), 0),
+            "entry_mult": round(p.get("entry_mult", 0.0), 2),
             "exit_reason": reason, "exit_usd": round(exit_price * sol_usd, 8),
             "pnl": round(pnl, 4), "proceeds": round(proceeds, 4),
             "amount": round(p["amount"], 2), "held_s": round(ts_s - p["entered_at"], 1),
@@ -247,6 +255,15 @@ def main() -> None:
                             stats["thin_pool"] += 1  # quote gate would reject
                             try_arm(ts_s)
                             continue
+                        mult = price / max(armed[1].raw.get("price") or 0.0, 1e-30)
+                        if args.min_mult and mult < args.min_mult:
+                            stats["low_mult"] += 1  # weak momentum at fill
+                            try_arm(ts_s)
+                            continue
+                        if args.max_mult and mult > args.max_mult:
+                            stats["high_mult"] += 1  # too late / topped out
+                            try_arm(ts_s)
+                            continue
                         open_position(armed[1], armed[2], price, fill_liq, ts_s)
                         stats["entries"] += 1
                         if args.verbose:
@@ -311,7 +328,8 @@ def main() -> None:
         "sol_usd": sol_usd, "entry_latency_s": args.entry_latency_s,
         "funnel": {k: stats[k] for k in
                    ("launches", "rug", "filter", "score_skip", "dev_veto", "qualified",
-                    "entries", "no_fill", "thin_pool", "aged_out", "parse_error", "daily_halt")},
+                    "entries", "no_fill", "thin_pool", "low_mult", "high_mult",
+                    "aged_out", "parse_error", "daily_halt")},
         "exit_reasons": dict(exit_reasons),
         "trades": len(trades), "wins": wins, "losses": losses,
         "winrate": round(wins / entries * 100, 1) if entries else 0.0,
@@ -323,9 +341,9 @@ def main() -> None:
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(res, f, indent=2)
     with open(str(Path(args.out).with_suffix(".csv")), "w", encoding="utf-8") as f:
-        f.write("ts,symbol,score,entry_usd,entry_liq,exit_reason,exit_usd,pnl,amount,held_s\n")
+        f.write("ts,symbol,score,entry_usd,entry_liq,entry_mult,exit_reason,exit_usd,pnl,amount,held_s\n")
         for t in trades:
-            f.write(f"{t['ts']},{t['symbol']},{t['score']},{t['entry_usd']},{t['entry_liq']},{t['exit_reason']},"
+            f.write(f"{t['ts']},{t['symbol']},{t['score']},{t['entry_usd']},{t['entry_liq']},{t['entry_mult']},{t['exit_reason']},"
                     f"{t['exit_usd']},{t['pnl']},{t['amount']},{t['held_s']}\n")
     print(json.dumps(res, indent=2))
 
