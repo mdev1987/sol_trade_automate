@@ -10,6 +10,27 @@ Built from the course spec in `bot_plan/COMPLETE_SUMMARY.md`, the reference
 Jupiter client in `bot_plan/sample_jupiter_code.txt`, and the API docs in
 `bot_plan/docs/`.
 
+## Replay backtest (data-driven strategy validation)
+
+`tools/build_replay_parquet.py` converts the hourly PumpAPI archives
+(`bot_plan/downloads/YYYY/MM/DD/HH.jsonl.zst`, ~10GB/day) into per-hour
+parquet (`bot_plan/parquet/YYYY-MM-DD/`, ~7GB/day, gitignored) with one
+streaming pass per hour (2 workers, ~30-55s/hour, memory-safe on 16GB).
+
+`tools/backtest.py` replays the live strategy over the parquet (same
+pipeline modules, entry at latency + 2s with slippage tiers, TP/SL/dead
+pool/no-trades/max-hold exits, 60/40 compounding, loss pause, daily kill
+switch, dev-veto replay, pump.fun 1% per-swap fees). A/B knobs:
+`--no-veto --min-liq --min-score --take-profit --stop-loss --max-hold-min
+--daily-loss-limit --fee-bps`.
+
+Validated on 2026-07-21 (16h) + 2026-08-09 (24h, out-of-sample):
+- current live config loses money (-$25.62 / -$17.69 with fees)
+- score>=60 + pool-liq floor $5k + dev veto ≈ breakeven-to-positive
+  (-$1.58 / +$2.06); liquidity floor is the dominant lever.
+- These findings are wired into the live bot (MIN_SCORE=60,
+  MIN_LIQUIDITY_USD=5000, LIQ_CONFIRM_WINDOW_S=10).
+
 ## Layout
 
 ```
