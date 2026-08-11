@@ -173,7 +173,8 @@ async def execute_trade(
             )
             if stats:
                 stats.record_dev_veto(candidate.launch.symbol, veto_reason)
-            await notifier.send_alert("🚫 DEV VETO", f"{candidate.launch.symbol} — {veto_reason}")
+            # vetoes are log/journal-only by design: an alert per candidate is
+            # noise (serial launchers trigger many per minute)
             return False, f"dev_veto:{veto_reason}"
 
     if liq_task is not None:
