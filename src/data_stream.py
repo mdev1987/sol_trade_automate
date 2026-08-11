@@ -190,6 +190,24 @@ class PumpEventHub:
             self._task = None
 
     # ------------------------------------------------------------- dispatch
+    @staticmethod
+    def _quote_in_pool(ev: dict) -> float | None:
+        """SOL in the bonding curve from either feed shape (None if unknown).
+
+        pumpapi buy/sell: ``quoteInPool`` (SOL).
+        pumpdev curve: ``vSolInBondingCurve`` (UI SOL) or raw
+        ``vQuoteInBondingCurve``/1e9 for SOL-quoted pairs.
+        """
+        for key in ("quoteInPool", "vSolInBondingCurve"):
+            v = ev.get(key)
+            if isinstance(v, (int, float)) and v > 0:
+                return float(v)
+        if ev.get("quoteMint") == "So11111111111111111111111111111111111111112":
+            v = ev.get("vQuoteInBondingCurve")
+            if isinstance(v, (int, float)) and v > 0:
+                return float(v) / 1e9
+        return None
+
     def _dispatch(self, ev: dict) -> None:
         action = ev.get("action") or ev.get("txType")
         if action == "create":
@@ -197,11 +215,17 @@ class PumpEventHub:
                 self._creates.put_nowait(ev)
             except asyncio.QueueFull:
                 log.warning("creates queue full — dropping create event")
-        elif action in ("buy", "sell") and ev.get("pool") == "pump":
-            try:
-                self._trades.put_nowait(ev)
-            except asyncio.QueueFull:
-                pass  # price ticks are disposable; never block the feed
+        elif action in ("buy", "sell"):
+            # pumpapi curve trades carry pool=="pump"; pumpdev curve trades
+            # omit `pool` entirely (bonding curve). AMM events carry a real
+            # pool address on both feeds — the live feed is curve-only
+            # (DexScreener covers post-migration), so skip those.
+            pool = ev.get("pool")
+            if pool is None or pool == "pump":
+                try:
+                    self._trades.put_nowait(ev)
+                except asyncio.QueueFull:
+                    pass  # price ticks are disposable; never block the feed
 
     async def _run(self) -> None:
         while True:
@@ -255,10 +279,8 @@ class PumpEventHub:
             ev = await self._trades.get()
             mint = ev.get("mint")
             price = ev.get("price")
-            liq = ev.get("quoteInPool")
             if mint and isinstance(price, (int, float)) and price > 0:
-                q = float(liq) if isinstance(liq, (int, float)) and liq > 0 else None
-                yield mint, float(price), q
+                yield mint, float(price), self._quote_in_pool(ev)
 
 
 class LaunchFeedRouter:

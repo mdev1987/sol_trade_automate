@@ -315,4 +315,36 @@ assert calls["n"] == 1, calls
 asyncio.run(dr.close())
 print("[OK] dev-rep: per-wallet cache (1 fetch for 2 veto calls)")
 
+# 12) PumpEventHub dispatch: pumpapi curve + pumpdev curve both feed the
+#     trades queue; pumpdev AMM events (pool address present) are dropped;
+#     on-chain liquidity is normalized from both event shapes.
+from data_stream import PumpEventHub
+
+async def _hub_case():
+    hub = PumpEventHub()
+    # pumpapi curve trade
+    hub._dispatch({"action": "buy", "mint": "A", "price": 0.001,
+                   "pool": "pump", "quoteInPool": 3.0})
+    # pumpdev curve trade (bonding-curve events omit `pool`)
+    hub._dispatch({"txType": "sell", "mint": "B", "price": 0.002,
+                   "vSolInBondingCurve": 40.0})
+    # pumpdev curve, raw SOL reserves (UI = raw / 1e9)
+    hub._dispatch({"txType": "buy", "mint": "C", "price": 0.003,
+                   "quoteMint": "So11111111111111111111111111111111111111112",
+                   "vQuoteInBondingCurve": 50_000_000_000})
+    # pumpdev AMM trade (pool present) -> must NOT reach the trades queue
+    hub._dispatch({"txType": "buy", "mint": "D", "price": 0.004,
+                   "pool": "PoolAddr", "poolEffectiveQuoteReserves": 123})
+    # create -> creates queue, not trades
+    hub._dispatch({"action": "create", "mint": "E"})
+    got = []
+    for _ in range(3):
+        got.append(await hub.trades().__anext__())
+    return got, hub._creates.qsize()
+
+got, creates_q = asyncio.run(_hub_case())
+assert got == [("A", 0.001, 3.0), ("B", 0.002, 40.0), ("C", 0.003, 50.0)], got
+assert creates_q == 1, "create must route to the creates queue"
+print("[OK] hub dispatch: pumpapi+pumpdev curve feed trades, AMM dropped, liq normalized")
+
 print("\nALL SMOKE TESTS PASSED")

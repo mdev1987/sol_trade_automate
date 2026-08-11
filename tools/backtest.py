@@ -323,9 +323,9 @@ def main() -> None:
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(res, f, indent=2)
     with open(str(Path(args.out).with_suffix(".csv")), "w", encoding="utf-8") as f:
-        f.write("ts,symbol,score,entry_usd,exit_reason,exit_usd,pnl,amount,held_s\n")
+        f.write("ts,symbol,score,entry_usd,entry_liq,exit_reason,exit_usd,pnl,amount,held_s\n")
         for t in trades:
-            f.write(f"{t['ts']},{t['symbol']},{t['score']},{t['entry_usd']},{t['exit_reason']},"
+            f.write(f"{t['ts']},{t['symbol']},{t['score']},{t['entry_usd']},{t['entry_liq']},{t['exit_reason']},"
                     f"{t['exit_usd']},{t['pnl']},{t['amount']},{t['held_s']}\n")
     print(json.dumps(res, indent=2))
 
