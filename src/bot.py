@@ -85,6 +85,28 @@ async def _quick_pair(ds: DexScreenerClient, mint: str):
         return None
 
 
+async def _confirm_liquidity(
+    live_feed: LivePriceFeed,
+    mint: str,
+    sol_usd: float,
+    floor: float,
+    window_s: float,
+) -> tuple[bool, float | None]:
+    """Poll on-chain pool liquidity until it proves >= floor (backtest rule:
+    fill only after the pool is real). Returns (ok, last_liq_usd)."""
+    deadline = _t.monotonic() + max(window_s, 0.1)
+    last_liq: float | None = None
+    while True:
+        liq = live_feed.pool_liquidity_usd(mint, sol_usd=sol_usd)
+        if liq is not None:
+            last_liq = liq
+            if liq >= floor:
+                return True, liq
+        if _t.monotonic() >= deadline:
+            return False, last_liq
+        await asyncio.sleep(0.5)
+
+
 async def execute_trade(
     candidate: Candidate,
     risk: RiskManager,
@@ -115,6 +137,20 @@ async def execute_trade(
         asyncio.create_task(dev_rep.veto(candidate.launch)) if dev_rep is not None else None
     )
 
+    # --- liquidity confirmation (parallel; backtest-validated entry floor) ---
+    liq_task = None
+    if live_feed is not None and settings.min_liquidity_usd > 0:
+        sol_usd = await live_feed.sol_usd()
+        liq_task = asyncio.create_task(
+            _confirm_liquidity(
+                live_feed,
+                mint,
+                sol_usd or 150.0,
+                settings.min_liquidity_usd,
+                settings.liq_confirm_window_s,
+            )
+        )
+
     # --- entry price estimate BEFORE the buy (fast, one DexScreener call) ---
     pair = await _quick_pair(ds, mint)
     entry_price, liquidity_usd = await _estimate_entry_price(
@@ -139,6 +175,32 @@ async def execute_trade(
                 stats.record_dev_veto(candidate.launch.symbol, veto_reason)
             await notifier.send_alert("🚫 DEV VETO", f"{candidate.launch.symbol} — {veto_reason}")
             return False, f"dev_veto:{veto_reason}"
+
+    if liq_task is not None:
+        liq_ok, liq_now = await liq_task
+        if not liq_ok:
+            log.info(
+                "THIN POOL %s — pool $%.0f < floor $%.0f — skipping",
+                candidate.launch.symbol,
+                liq_now or 0.0,
+                settings.min_liquidity_usd,
+            )
+            append_journal(
+                {
+                    "type": "trade",
+                    "mint": mint,
+                    "symbol": candidate.launch.symbol,
+                    "side": "buy",
+                    "status": "failed",
+                    "error": "thin_liquidity",
+                }
+            )
+            if stats:
+                stats.record_thin_pool(candidate.launch.symbol)
+            return False, "thin_liquidity"
+        if liq_now is not None:
+            # on-chain pool value is fresher than the (often absent) DS pair
+            liquidity_usd = liq_now
 
     if entry_price is None or entry_price <= 0:
         log.error("No entry price for %s — aborting trade", candidate.launch.symbol)

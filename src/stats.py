@@ -30,6 +30,7 @@ class TradeStats:
     buy_failures: int = 0
     sell_failures: int = 0
     dev_vetoes: int = 0  # launches blocked by the Helius dev-reputation veto
+    thin_pools: int = 0  # entries skipped: pool liquidity below the floor
     last_trade: dict = field(default_factory=dict)
     active_position: dict = field(default_factory=dict)
     exit_counts: dict = field(default_factory=dict)  # reason -> count
@@ -116,6 +117,11 @@ class TradeStats:
         self.dev_vetoes += 1
         self.last_trade = {"symbol": symbol, "won": False, "error": f"dev_veto:{reason}"}
 
+    def record_thin_pool(self, symbol: str) -> None:
+        """A launch was skipped because its pool never proved liquid enough."""
+        self.thin_pools += 1
+        self.last_trade = {"symbol": symbol, "won": False, "error": "thin_liquidity"}
+
     def record_sell_failure(self, symbol: str, error: str) -> None:
         self.sell_failures += 1
         self.last_trade = {"symbol": symbol, "won": False, "error": error}
@@ -154,6 +160,7 @@ class TradeStats:
             f"📈 Trades: `{self.trades}`  (✅ `{self.wins}` / ❌ `{self.losses}`)",
             f"🎯 Winrate: `{self.winrate * 100:.1f}%`",
             f"🚫 Dev vetoes: `{self.dev_vetoes}`",
+            f"🩸 Thin pools: `{self.thin_pools}`",
             f"💵 Realized PnL: `{self._fmt_usd(self.realized_pnl_usd)}`",
             f"📅 Today: `{self._fmt_usd(self.daily_pnl_usd)}`",
             f"⚠️ Buy fails: `{self.buy_failures}` · Sell fails: `{self.sell_failures}`",

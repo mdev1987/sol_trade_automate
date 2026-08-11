@@ -12,7 +12,9 @@ from config import settings
 
 assert settings.starting_amount == 2.0
 assert settings.starting_balance == 20.0  # paper wallet bankroll
-assert settings.min_score == 45.0          # feed-score gate (tightened)
+assert settings.min_score == 60.0          # feed-score gate (backtest-validated)
+assert settings.min_liquidity_usd == 5000.0  # entry liquidity floor (validated)
+assert settings.liq_confirm_window_s == 10.0
 assert settings.stale_exit_sec == 60.0
 assert settings.max_candidate_age_min == 5.0
 assert settings.stop_loss == 0.82

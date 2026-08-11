@@ -126,8 +126,18 @@ class Settings:
     max_hold_min: float = field(default_factory=lambda: _get_float("MAX_HOLD_MIN", 30.0))
     # use the PumpAPI buy/sell stream for sub-second TP/SL triggers
     live_feed_exit: bool = field(default_factory=lambda: _get_bool("LIVE_FEED_EXIT", True))
-    # minimum feed score for a launch to be queued (feed-data entry path)
-    min_score: float = field(default_factory=lambda: _get_float("MIN_SCORE", 45.0))
+    # minimum feed score for a launch to be queued (feed-data entry path).
+    # Replay backtest (07/21 + 08/09) shows 45 lets in the anti-predictive
+    # high-scorer cohort; 60 is the validated gate.
+    min_score: float = field(default_factory=lambda: _get_float("MIN_SCORE", 60.0))
+    # entry liquidity floor: skip the buy unless the on-chain pool liquidity
+    # (2 x quoteInPool x SOL) is >= MIN_LIQUIDITY_USD. Backtest-validated
+    # (kills the dead/thin-pool bleed; 0 = disabled). The bot waits up to
+    # LIQ_CONFIRM_WINDOW_S for a confirming buy to push the pool over the floor.
+    min_liquidity_usd: float = field(default_factory=lambda: _get_float("MIN_LIQUIDITY_USD", 5000.0))
+    liq_confirm_window_s: float = field(
+        default_factory=lambda: _get_float("LIQ_CONFIRM_WINDOW_S", 10.0)
+    )
 
     # dead-token exit: exit when the live feed saw no trade for this mint for
     # STALE_EXIT_SEC AND no DexScreener pair ever appeared (frees the single

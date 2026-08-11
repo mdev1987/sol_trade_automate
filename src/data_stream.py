@@ -247,14 +247,18 @@ class PumpEventHub:
             source = "pumpapi" if ev.get("action") == "create" else "pumpdev"
             yield TokenLaunch.from_event(ev, source=source)
 
-    async def trades(self) -> AsyncIterator[tuple[str, float]]:
-        """(mint, price_sol) buy/sell events for the live price feed."""
+    async def trades(self) -> AsyncIterator[tuple[str, float, float | None]]:
+        """(mint, price_sol, quoteInPool_sol) buy/sell events for the live
+        price feed. quoteInPool lets the feed track on-chain pool liquidity
+        (entry floor / dead-pool sanity); None when the event lacks it."""
         while True:
             ev = await self._trades.get()
             mint = ev.get("mint")
             price = ev.get("price")
+            liq = ev.get("quoteInPool")
             if mint and isinstance(price, (int, float)) and price > 0:
-                yield mint, float(price)
+                q = float(liq) if isinstance(liq, (int, float)) and liq > 0 else None
+                yield mint, float(price), q
 
 
 class LaunchFeedRouter:

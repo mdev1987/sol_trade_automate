@@ -192,6 +192,38 @@ async def main():
     assert not st_veto.in_trade, "no position opened"
     print("[OK] dev-rep veto aborts before buy (bankroll untouched, stats recorded)")
 
+    # --- liquidity floor: thin pool aborts before the buy; rich pool proceeds ---
+    class FakeLiveThin:
+        async def sol_usd(self):
+            return 150.0
+        def pool_liquidity_usd(self, mint, sol_usd=150.0, max_age_s=60.0):
+            return 800.0  # below the $5k floor
+
+    class FakeLiveRich:
+        async def sol_usd(self):
+            return 150.0
+        def pool_liquidity_usd(self, mint, sol_usd=150.0, max_age_s=60.0):
+            return 12_000.0  # above the floor
+
+    old_win = settings.liq_confirm_window_s
+    settings.liq_confirm_window_s = 0.3
+    try:
+        st_t = TradeStats(dry_run=True)
+        won_t, reason_t = await execute_trade(
+            cand, RiskManager(), FakeJupiter(), NoLiqDex(),
+            TelegramNotifier(), st_t, live_feed=FakeLiveThin())
+        assert not won_t and reason_t == "thin_liquidity", (won_t, reason_t)
+        assert st_t.thin_pools == 1, st_t.thin_pools
+        assert st_t.balance_usd == 20.0 and not st_t.in_trade, "no buy -> bankroll untouched"
+        FakeMonitor.exit_signal = "take_profit"
+        won_r, reason_r = await execute_trade(
+            cand, RiskManager(), FakeJupiter(), NoLiqDex(),
+            TelegramNotifier(), TradeStats(dry_run=True), live_feed=FakeLiveRich())
+        assert won_r and reason_r == "take_profit", (won_r, reason_r)
+    finally:
+        settings.liq_confirm_window_s = old_win
+    print("[OK] liquidity floor: thin pool aborts (bankroll untouched), rich pool proceeds")
+
     print("\nINTEGRATION TEST PASSED")
 
 

@@ -44,6 +44,8 @@ class LivePriceFeed:
         self.url = url or settings.pumpapi_ws_url
         self._trades = trades  # async iterator of (mint, price_sol)
         self._prices: dict[str, tuple[float, float]] = {}
+        # mint -> (quoteInPool SOL, monotonic ts) — on-chain pool liquidity
+        self._liqs: dict[str, tuple[float, float]] = {}
         self._sol_usd: float | None = None
         self._sol_usd_ts = 0.0
         self._task: asyncio.Task | None = None
@@ -74,13 +76,16 @@ class LivePriceFeed:
             await self._run_own_connection()
 
     async def _consume(self, trades) -> None:
-        """Consume (mint, price_sol) tuples from the shared hub."""
+        """Consume (mint, price_sol, quoteInPool_sol) tuples from the hub."""
         delay = RECONNECT_BASE_S
         while True:
             try:
                 self._connected_at = time.monotonic()
-                async for mint, price in trades:
-                    self._prices[mint] = (float(price), time.monotonic())
+                async for mint, price, liq in trades:
+                    now = time.monotonic()
+                    self._prices[mint] = (float(price), now)
+                    if liq is not None:
+                        self._liqs[mint] = (float(liq), now)
                     self._prune()
                 delay = RECONNECT_BASE_S
             except asyncio.CancelledError:
@@ -109,8 +114,12 @@ class LivePriceFeed:
                             continue
                         mint = event.get("mint")
                         price = event.get("price")
+                        liq = event.get("quoteInPool")
                         if mint and isinstance(price, (int, float)) and price > 0:
-                            self._prices[mint] = (float(price), time.monotonic())
+                            now = time.monotonic()
+                            self._prices[mint] = (float(price), now)
+                            if isinstance(liq, (int, float)) and liq > 0:
+                                self._liqs[mint] = (float(liq), now)
             except (websockets.ConnectionClosed, OSError) as exc:
                 log.warning("LivePriceFeed disconnected (%s) — reconnect in %.0fs", exc, delay)
                 await asyncio.sleep(delay)
@@ -128,6 +137,7 @@ class LivePriceFeed:
             return
         cutoff = time.monotonic() - max_age_s
         self._prices = {m: v for m, v in self._prices.items() if v[1] >= cutoff}
+        self._liqs = {m: v for m, v in self._liqs.items() if v[1] >= cutoff}
 
     # --------------------------------------------------------------- queries
     def price_sol(self, mint: str, max_age_s: float = PRICE_MAX_AGE_S) -> float | None:
@@ -168,3 +178,25 @@ class LivePriceFeed:
             return None
         sol = await self.sol_usd()
         return price * sol if sol else None
+
+    def pool_liquidity_sol(self, mint: str, max_age_s: float = 60.0) -> float | None:
+        """Latest on-chain pool quoteInPool (SOL) for this mint, or None.
+
+        Only buy/sell events carry it, so a brand-new launch may not have an
+        entry yet — the caller polls until the confirmation window expires.
+        """
+        hit = self._liqs.get(mint)
+        if hit is None:
+            return None
+        liq_sol, ts = hit
+        if time.monotonic() - ts > max_age_s:
+            return None
+        return liq_sol
+
+    def pool_liquidity_usd(self, mint: str, sol_usd: float = 150.0, max_age_s: float = 60.0) -> float | None:
+        """Pool liquidity in USD ≈ 2 x quoteInPool x SOL (bonding-curve model,
+        same as the replay backtest). None when unknown/stale."""
+        liq_sol = self.pool_liquidity_sol(mint, max_age_s)
+        if liq_sol is None:
+            return None
+        return 2.0 * liq_sol * sol_usd

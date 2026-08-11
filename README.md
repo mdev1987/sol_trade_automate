@@ -57,10 +57,12 @@ Hardening v2 (all optional, sane defaults):
 | `STATUS_INTERVAL_MIN` | `15` | periodic `/status` heartbeat card (`0` = off) |
 | `MAX_HOLD_MIN` | `30` | force-exit a position held this long (stuck-position watchdog) |
 | `LIVE_FEED_EXIT` | `true` | PumpAPI buy/sell stream → sub-second TP/SL triggers (shares the scanner's single connection) |
-| `MIN_SCORE` | `45` | minimum feed score for a launch to be queued (feed-data entry path) |
+| `MIN_SCORE` | `60` | minimum feed score for a launch to be queued (feed-data entry path; backtest-validated) |
 | `STALE_EXIT_SEC` | `60` | dead-token exit: no live trades this long + no DexScreener pair → exit (frees the position slot) |
 | `STALE_EXIT_GRACE_SEC` | `15` | grace period after entry before the dead-token exit can fire |
 | `MAX_CANDIDATE_AGE_MIN` | `5` | drop queued candidates older than this at dequeue time |
+| `MIN_LIQUIDITY_USD` | `5000` | entry floor: skip the buy unless the on-chain pool liquidity (2×quoteInPool×SOL) proves ≥ this. Backtest-validated (removes the dead/thin-pool bleed); `0` = off |
+| `LIQ_CONFIRM_WINDOW_S` | `10` | how long the bot waits for a confirming buy to push the pool over the floor |
 | `DEV_REP_ENABLED` | `true` | Helius dev-reputation veto (read-only, fail-open) |
 | `DEV_REP_MAX_CREATES_24H` | `3` | veto devs with ≥ N pump.fun creates in 24h (serial launchers) |
 | `DEV_REP_MIN_AGE_HOURS` | `0` | veto wallets younger than this; `0` = off (weakest signal) |
