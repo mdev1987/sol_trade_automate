@@ -219,6 +219,38 @@ async def execute_trade(
             stats.record_buy_failure(candidate.launch.symbol, "no_entry_price")
         return False, "no_entry_price"
 
+    # --- entry-mult gate (replay-validated): don't chase already-pumped fills.
+    # SKIP when the latest on-chain price is > MAX_ENTRY_MULT x the launch
+    # price. Fail-open: no fresh live price or no launch price -> trade on.
+    if settings.max_entry_mult > 0 and live_feed is not None:
+        try:
+            cur_price = live_feed.price_sol(mint)
+            base_price = candidate.launch.raw.get("price")
+            if cur_price and base_price and float(base_price) > 0:
+                mult = cur_price / float(base_price)
+                if mult > settings.max_entry_mult:
+                    log.info(
+                        "TOPPED-OUT %s — price %.1fx launch > max %.1fx — skipping",
+                        candidate.launch.symbol,
+                        mult,
+                        settings.max_entry_mult,
+                    )
+                    append_journal(
+                        {
+                            "type": "trade",
+                            "mint": mint,
+                            "symbol": candidate.launch.symbol,
+                            "side": "buy",
+                            "status": "failed",
+                            "error": f"topped_out:{mult:.1f}x",
+                        }
+                    )
+                    if stats:
+                        stats.record_buy_failure(candidate.launch.symbol, "topped_out")
+                    return False, "topped_out"
+        except Exception:  # noqa: BLE001 — the gate must never block a fill
+            log.exception("entry-mult gate failed open for %s", candidate.launch.symbol)
+
     # 1) BUY via Jupiter (quote gate + managed execute)
     buy_result: SwapResult = await jupiter.buy(mint, amount, liquidity_usd)
     simulated = False
@@ -314,14 +346,32 @@ async def execute_trade(
             pass
     log.info("EXIT SIGNAL: %s @ $%s", signal.reason, signal.price_usd)
 
-    # 3) SELL via Jupiter (slippage escalation 200→300→500→1000)
+    # 3) SELL via Jupiter (slippage escalation 200→300→500→1000; bounded retry
+    # so a transient network blip never orphans the position)
     if settings.dry_run and simulated:
         sell_result = SwapResult(True, "dry-run-sig", 0, 0, "")
     else:
-        try:
-            sell_result = await jupiter.sell(mint, tokens_raw)
-        except Exception as exc:  # noqa: BLE001
-            log.exception("SELL FAILED for %s", candidate.launch.symbol)
+        sell_attempts = 3
+        sell_result = None
+        for attempt in range(sell_attempts):
+            try:
+                sell_result = await jupiter.sell(mint, tokens_raw)
+            except Exception as exc:  # noqa: BLE001
+                sell_result = SwapResult(False, "", tokens_raw, 0, str(exc))
+            if sell_result.success:
+                break
+            if attempt + 1 < sell_attempts:
+                log.warning(
+                    "SELL retry %d/%d for %s — %s (retrying in %ds)",
+                    attempt + 2,
+                    sell_attempts,
+                    candidate.launch.symbol,
+                    sell_result.error,
+                    5 * (attempt + 1),
+                )
+                await asyncio.sleep(5 * (attempt + 1))
+        if not sell_result.success:
+            log.error("SELL FAILED for %s: %s", candidate.launch.symbol, sell_result.error)
             append_journal(
                 {
                     "type": "trade",
@@ -329,13 +379,13 @@ async def execute_trade(
                     "symbol": candidate.launch.symbol,
                     "side": "sell",
                     "status": "failed",
-                    "error": str(exc),
+                    "error": str(sell_result.error),
                 }
             )
             if stats:
-                stats.record_sell_failure(candidate.launch.symbol, str(exc))
+                stats.record_sell_failure(candidate.launch.symbol, str(sell_result.error))
             try:
-                await notifier.send_alert("SELL FAILED", f"{candidate.launch.symbol} — {exc}")
+                await notifier.send_alert("SELL FAILED", f"{candidate.launch.symbol} — {sell_result.error}")
             except Exception:  # noqa: BLE001
                 pass
             return False, "sell_failed"

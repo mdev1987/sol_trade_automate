@@ -101,6 +101,7 @@ else
   tail -n 4 "$APP_DIR/bot_logs/bot.log" 2>/dev/null || tail -n 4 "$APP_DIR/bot.log"
   echo
   echo "DONE. Commands:  bash scripts/run_bot.sh {start|stop|status|restart}"
-  echo "NOTE: no auto-start on boot (no systemd). Add to crontab:"
-  echo "  @reboot cd $APP_DIR && bash scripts/run_bot.sh start"
+  echo "NOTE: no auto-start on boot (no systemd). Add BOTH lines to crontab:"
+  echo "  */5 * * * * $APP_DIR/scripts/watchdog.sh $APP_DIR"
+  echo "  @reboot $APP_DIR/scripts/watchdog.sh $APP_DIR"
 fi

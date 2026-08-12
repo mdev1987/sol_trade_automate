@@ -25,14 +25,19 @@ switch, dev-veto replay, pump.fun 1% per-swap fees). A/B knobs:
 --daily-loss-limit --fee-bps`.
 
 Validated battery (4 full days, 100bps fees, dev veto on; full 24h 07/21):
-- deployed config (score>=60 + $5k liq floor + daily kill switch): **+$6.42**
-  → 07/20 −10.36 (halt) · 07/21 −10.16 (halt) · 07/22 +24.88 · 08/09 +2.06
-- same config without the kill switch: −$3.47 — the daily loss limit is the
-  difference-maker (adds +$9.89); old course config over the same days: −$116.54
-- regime-dependent: daily win-rate 23–43%; 07/21 evening hours (16–23) are
-  materially worse than the day (that's the -10.16 halt day)
+- deployed config (score>=60 + $5k liq floor + MAX_ENTRY_MULT=5 + daily kill
+  switch @ -$8): **+$28.61**
+  → 07/20 −8.18 (halt) · 07/21 +17.94 · 07/22 +17.99 · 08/09 +0.86
+  (daily win-rate 22–36%)
+- the entry-mult gate is the big lever: fills already >5x the launch price
+  are "chasing a pump" and lose disproportionately — without it the same
+  battery is +$6.42 (−10.36 · −10.16 · +24.88 · +2.06); tightening the daily
+  cap 10→8 adds a further ~+$2 on the halt days with no good-day cost
+- regime-dependent: daily win-rate 22–43%; 07/21 evening hours (16–23) are
+  materially worse than the day (that's the −10.16 halt day pre-gate)
 - These findings are wired into the live bot (MIN_SCORE=60,
-  MIN_LIQUIDITY_USD=5000, LIQ_CONFIRM_WINDOW_S=10, DAILY_LOSS_LIMIT=10).
+  MIN_LIQUIDITY_USD=5000, LIQ_CONFIRM_WINDOW_S=10, MAX_ENTRY_MULT=5,
+  DAILY_LOSS_LIMIT=8).
 
 ## Layout
 
@@ -91,6 +96,7 @@ Hardening v2 (all optional, sane defaults):
 | `MAX_CANDIDATE_AGE_MIN` | `5` | drop queued candidates older than this at dequeue time |
 | `MIN_LIQUIDITY_USD` | `5000` | entry floor: skip the buy unless the on-chain pool liquidity (2×quoteInPool×SOL) proves ≥ this. Backtest-validated (removes the dead/thin-pool bleed); `0` = off |
 | `LIQ_CONFIRM_WINDOW_S` | `10` | how long the bot waits for a confirming buy to push the pool over the floor |
+| `MAX_ENTRY_MULT` | `5` | skip the buy when the token already traded at > this × the launch price (don't chase the already-pumped fill). Backtest-validated (the single biggest PnL lever in the battery); `0` = off |
 | `DEV_REP_ENABLED` | `true` | Helius dev-reputation veto (read-only, fail-open) |
 | `DEV_REP_MAX_CREATES_24H` | `3` | veto devs with ≥ N pump.fun creates in 24h (serial launchers) |
 | `DEV_REP_MIN_AGE_HOURS` | `0` | veto wallets younger than this; `0` = off (weakest signal) |
@@ -157,14 +163,24 @@ bash scripts/run_bot.sh {start|stop|status|restart}
   logs → `bot_logs/supervisor.log`
 - `stop` = kill the supervisor first (no re-spawn race), graceful SIGTERM,
   ≤25s grace, then kill -9 stragglers — **never leaves an orphan bot**
-- add `@reboot cd /opt/sol-bot && bash scripts/run_bot.sh start` to crontab
-  for auto-start after host reboot
+- `@reboot` auto-start + crash/stall watchdog (no systemd available):
+
+```cron
+*/5 * * * * /opt/sol-bot/scripts/watchdog.sh /opt/sol-bot
+@reboot /opt/sol-bot/scripts/watchdog.sh /opt/sol-bot
+```
+
+  `watchdog.sh` re-starts the supervisor when it is dead (e.g. after a host
+  reboot) and restarts the bot when its log goes silent for
+  `WATCHDOG_STALE_MIN` (default 10m) minutes even though the supervisor is
+  alive (wedged I/O). Every restart posts a ⚠️ alert to the configured
+  Telegram chat (creds read from `.env`), so an outage is never silent.
 
 systemd is optional: `scripts/sol-bot.service` (user unit — `systemctl --user
 install`) or `/etc/systemd/system/sol-bot.service` (root, `Restart=always`,
 starts on boot, stderr/tracebacks in `journalctl -u sol-bot -e`).
 `scripts/deploy_host.sh` picks one automatically (systemd+root → service,
-otherwise → `run_bot.sh`).
+otherwise → `run_bot.sh` + prints the `watchdog.sh` crontab line).
 
 ## Logs
 

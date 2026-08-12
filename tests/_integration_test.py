@@ -166,10 +166,12 @@ async def main():
 
     # --- daily loss kill switch (hardening v2) ---
     s4 = TradeStats(dry_run=True)
-    s4.daily_pnl_usd = -9.5
+    limit = settings.daily_loss_limit
+    assert limit > 0, "DAILY_LOSS_LIMIT must be > 0 for the kill-switch tests"
+    s4.daily_pnl_usd = -limit + 1.0
     assert not s4.daily_loss_limit_hit(), "should NOT halt above the limit"
-    s4.daily_pnl_usd = -10.0
-    assert s4.daily_loss_limit_hit(), "should halt at exactly -10"
+    s4.daily_pnl_usd = -limit
+    assert s4.daily_loss_limit_hit(), "should halt at exactly the limit"
     s5 = TradeStats(dry_run=True)
     s5.record_exit(False, -2.0, 0.0, "stop_loss", 0.00008)
     assert s5.daily_pnl_usd == -2.0 and s5.day_key, "daily pnl tracking"

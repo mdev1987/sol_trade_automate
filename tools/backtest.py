@@ -87,8 +87,10 @@ def main() -> None:
                     help="per-swap protocol fee in bps (pump.fun = 100 = 1 pct each side)")
     ap.add_argument("--min-mult", type=float, default=0.0,
                     help="skip fills unless price/create-price >= this (momentum gate)")
-    ap.add_argument("--max-mult", type=float, default=0.0,
-                    help="skip fills when price/create-price exceeds this (0 = off)")
+    ap.add_argument("--max-mult", type=float, default=None,
+                    help="skip fills when price/create-price exceeds this "
+                         "(default: settings.max_entry_mult, i.e. the deployed "
+                         "MAX_ENTRY_MULT gate — 0 = off)")
     ap.add_argument("--take-profit", type=float, default=None)
     ap.add_argument("--stop-loss", type=float, default=None)
     args = ap.parse_args()
@@ -99,6 +101,7 @@ def main() -> None:
 
     sol_usd = args.sol_usd
     min_liq = settings.min_liquidity_usd if args.min_liq is None else args.min_liq
+    max_mult = settings.max_entry_mult if args.max_mult is None else args.max_mult
     quote = QuoteConfig()
 
     files = sorted(glob.glob(str(Path(args.data) / "*.parquet")))
@@ -264,7 +267,7 @@ def main() -> None:
                             stats["low_mult"] += 1  # weak momentum at fill
                             try_arm(ts_s)
                             continue
-                        if args.max_mult and mult > args.max_mult:
+                        if max_mult and mult > max_mult:
                             stats["high_mult"] += 1  # too late / topped out
                             try_arm(ts_s)
                             continue

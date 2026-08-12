@@ -12,9 +12,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# Logs are pinned to bot_plan/bot_logs/ (absolute) so they land in the same
-# place no matter what CWD the bot is started from (terminal, systemd, tests).
-_LOG_DIR = Path(__file__).resolve().parent.parent / "bot_plan" / "bot_logs"
+# Logs are pinned to bot_logs/ (absolute) so they land in the same place no
+# matter what CWD the bot is started from (terminal, systemd, tests).
+_LOG_DIR = Path(__file__).resolve().parent.parent / "bot_logs"
 _LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = str(_LOG_DIR / "bot.log")
 JOURNAL_FILE = str(_LOG_DIR / "journal.json")

@@ -118,8 +118,10 @@ class Settings:
     play_floor: float = field(default_factory=lambda: _get_float("PLAY_FLOOR", 1.0))
     reinvest_ratio: float = field(default_factory=lambda: _get_float("REINVEST_RATIO", 0.60))
     # daily loss kill switch: halt trading until next UTC day when daily
-    # realized PnL <= -DAILY_LOSS_LIMIT (0 = disabled)
-    daily_loss_limit: float = field(default_factory=lambda: _get_float("DAILY_LOSS_LIMIT", 10.0))
+    # realized PnL <= -DAILY_LOSS_LIMIT (0 = disabled). Replay-validated:
+    # 8 halts the bleed on blowing days (-$8.18 vs -$10.36 at 10) without
+    # costing good days any upside (+17.94/+17.99/+0.86 unchanged).
+    daily_loss_limit: float = field(default_factory=lambda: _get_float("DAILY_LOSS_LIMIT", 8.0))
 
     # --- exits / monitoring ---
     # max hold time before a position is force-exited (stuck-position watchdog)
@@ -138,6 +140,12 @@ class Settings:
     liq_confirm_window_s: float = field(
         default_factory=lambda: _get_float("LIQ_CONFIRM_WINDOW_S", 10.0)
     )
+    # skip the buy when the token has already traded at more than
+    # MAX_ENTRY_MULT x the launch (create) price. On pump.fun a fill far
+    # above the launch price is chasing an initial burst that usually dumps —
+    # the replay backtest (mm5, 4-day battery) raised worst-day and total PnL
+    # (+$28.61 vs +$6.42 with the pre-gate config; 0 = gate off).
+    max_entry_mult: float = field(default_factory=lambda: _get_float("MAX_ENTRY_MULT", 5.0))
 
     # dead-token exit: exit when the live feed saw no trade for this mint for
     # STALE_EXIT_SEC AND no DexScreener pair ever appeared (frees the single
