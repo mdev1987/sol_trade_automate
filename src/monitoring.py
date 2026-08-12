@@ -9,11 +9,16 @@ import json
 import logging
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
-LOG_FILE = "bot.log"
-JOURNAL_FILE = "journal.json"
-TRADE_LOG_FILE = "trade_log.csv"
+# Logs are pinned to bot_plan/bot_logs/ (absolute) so they land in the same
+# place no matter what CWD the bot is started from (terminal, systemd, tests).
+_LOG_DIR = Path(__file__).resolve().parent.parent / "bot_plan" / "bot_logs"
+_LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = str(_LOG_DIR / "bot.log")
+JOURNAL_FILE = str(_LOG_DIR / "journal.json")
+TRADE_LOG_FILE = str(_LOG_DIR / "trade_log.csv")
 
 # --- logging setup ---------------------------------------------------------
 
