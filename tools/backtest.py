@@ -77,11 +77,12 @@ def main() -> None:
     ap.add_argument("--daily-loss-limit", type=float, default=None,
                     help="halt at this daily PnL (default: settings/10)")
     ap.add_argument("--no-veto", action="store_true", help="disable the dev-rep replay veto")
-    ap.add_argument("--min-liq", type=float, default=0.0,
-                    help="skip fills when the pool liquidity is below this USD")
+    ap.add_argument("--min-liq", type=float, default=None,
+                    help="skip fills when pool liquidity is below this USD "
+                         "(default: settings.min_liquidity_usd, i.e. the deployed floor)")
     ap.add_argument("--max-hold-min", type=float, default=None)
     ap.add_argument("--min-score", type=float, default=None,
-                    help="score gate (default: settings/45)")
+                    help="score gate (default: settings.min_score, deployed 60)")
     ap.add_argument("--fee-bps", type=float, default=100.0,
                     help="per-swap protocol fee in bps (pump.fun = 100 = 1 pct each side)")
     ap.add_argument("--min-mult", type=float, default=0.0,
@@ -97,6 +98,7 @@ def main() -> None:
         daily_limit = settings.daily_loss_limit
 
     sol_usd = args.sol_usd
+    min_liq = settings.min_liquidity_usd if args.min_liq is None else args.min_liq
     quote = QuoteConfig()
 
     files = sorted(glob.glob(str(Path(args.data) / "*.parquet")))
@@ -104,7 +106,9 @@ def main() -> None:
         raise SystemExit(f"no parquet in {args.data}")
     total_rows = sum(pq.ParquetFile(f).metadata.num_rows for f in files)
     print(f"backtest: {len(files)} hours, {total_rows:,} rows, "
-          f"sol_usd=${sol_usd:g}, latency={args.entry_latency_s}s", flush=True)
+          f"sol_usd=${sol_usd:g}, latency={args.entry_latency_s}s, "
+          f"floor=${min_liq:g}, score>={args.min_score if args.min_score is not None else settings.min_score:g}",
+          flush=True)
 
     # ---- replay state (bounded: queues + one position + per-mint price maps)
     pending = deque()  # (qualified_at_s, launch, score) FIFO — mirrors the bot queue
@@ -251,7 +255,7 @@ def main() -> None:
                 if pos is None and armed is not None:
                     if mint == armed[1].mint and ts_s >= armed[0]:
                         fill_liq = last_liq.get(mint, 0.0)
-                        if fill_liq < args.min_liq:
+                        if fill_liq < min_liq:
                             stats["thin_pool"] += 1  # quote gate would reject
                             try_arm(ts_s)
                             continue
