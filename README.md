@@ -24,12 +24,15 @@ switch, dev-veto replay, pump.fun 1% per-swap fees). A/B knobs:
 `--no-veto --min-liq --min-score --take-profit --stop-loss --max-hold-min
 --daily-loss-limit --fee-bps`.
 
-Validated on 2026-07-21 (16h) + 2026-08-09 (24h, out-of-sample):
-- current live config loses money (-$25.62 / -$17.69 with fees)
-- score>=60 + pool-liq floor $5k + dev veto ≈ breakeven-to-positive
-  (-$1.58 / +$2.06); liquidity floor is the dominant lever.
+Validated battery (4 full days, 100bps fees, dev veto on; full 24h 07/21):
+- deployed config (score>=60 + $5k liq floor + daily kill switch): **+$6.42**
+  → 07/20 −10.36 (halt) · 07/21 −10.16 (halt) · 07/22 +24.88 · 08/09 +2.06
+- same config without the kill switch: −$3.47 — the daily loss limit is the
+  difference-maker (adds +$9.89); old course config over the same days: −$116.54
+- regime-dependent: daily win-rate 23–43%; 07/21 evening hours (16–23) are
+  materially worse than the day (that's the -10.16 halt day)
 - These findings are wired into the live bot (MIN_SCORE=60,
-  MIN_LIQUIDITY_USD=5000, LIQ_CONFIRM_WINDOW_S=10).
+  MIN_LIQUIDITY_USD=5000, LIQ_CONFIRM_WINDOW_S=10, DAILY_LOSS_LIMIT=10).
 
 ## Layout
 
@@ -52,6 +55,9 @@ src/                  # application code (uv runtime, see pyproject.toml)
   compounding.py      # 60/40 split
   monitoring.py       # logging, journal, trade log, notifier
 tests/                # smoke + integration tests (no network)
+scripts/              # ops: ship_for_host.sh, deploy_host.sh, run_bot.sh,
+                      #      _supervise.sh (nohup supervisor), sol-bot.service
+tools/                # replay backtest: build_replay_parquet.py, backtest.py
 ```
 
 ## Setup (uv)
@@ -105,6 +111,15 @@ uv run python src/token_scanner.py       # scanner only
 uv run python src/bot.py                 # bot only
 ```
 
+On a host **without systemd** (small VPS/container), run it supervised with the
+built-in nohup supervisor instead of a terminal:
+
+```bash
+bash scripts/run_bot.sh start            # nohup + auto-restart (5s) + pidfile
+bash scripts/run_bot.sh status
+bash scripts/run_bot.sh stop             # graceful; kill -9 fallback, no orphans
+```
+
 Always run with `DRY_RUN=true` first — the quote gate still validates real
 routes against Jupiter but nothing is ever signed or executed. Review scored
 tokens, then go live with $2 USDC.
@@ -128,35 +143,41 @@ time, balance), 🏁 stopped summary. Only the configured `CHAT_ID` may send
 commands. `AUTO_START=true` (default) begins trading on launch; set
 `AUTO_START=false` to require `/start`.
 
-## Systemd (24/7 VPS)
+## Supervision (24/7)
 
-```ini
-# /etc/systemd/system/sniper-bot.service
-[Unit]
-Description=Solana Pump.fun Sniper Bot
-After=network-online.target
-
-[Service]
-WorkingDirectory=/home/mdev/Programming/new_sol_automate_bot
-ExecStart=/home/mdev/Programming/new_sol_automate_bot/.venv/bin/python src/main.py
-Restart=on-failure        # restart on crash; /stop exits cleanly and stays down
-RestartSec=5
-Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=multi-user.target
-```
+Two supported ways to keep the bot alive; **`scripts/run_bot.sh` is the default**
+(everywhere, including hosts without systemd):
 
 ```bash
-sudo systemctl daemon-reload && sudo systemctl enable --now sniper-bot
-journalctl -u sniper-bot -f
+bash scripts/run_bot.sh {start|stop|status|restart}
 ```
+
+- `start` = `nohup` a supervisor loop: runs `src/main.py`, auto-restarts 5s
+  after any exit (crash or OOM), pidfile `.sniper-bot-super.pid`;
+  logs → `bot_plan/bot_logs/supervisor.log`
+- `stop` = kill the supervisor first (no re-spawn race), graceful SIGTERM,
+  ≤25s grace, then kill -9 stragglers — **never leaves an orphan bot**
+- add `@reboot cd /opt/sol-bot && bash scripts/run_bot.sh start` to crontab
+  for auto-start after host reboot
+
+systemd is optional: `scripts/sol-bot.service` (user unit — `systemctl --user
+install`) or `/etc/systemd/system/sol-bot.service` (root, `Restart=always`,
+starts on boot, stderr/tracebacks in `journalctl -u sol-bot -e`).
+`scripts/deploy_host.sh` picks one automatically (systemd+root → service,
+otherwise → `run_bot.sh`).
 
 ## Logs
 
-- `bot.log` — runtime log
-- `journal.json` — trade journal (JSONL)
-- `trade_log.csv` — trade history
+- `bot_plan/bot_logs/bot.log` — runtime log (absolute paths, CWD-independent)
+- `bot_plan/bot_logs/journal.json` — trade journal (JSONL)
+- `bot_plan/bot_logs/trade_log.csv` — trade history
+- `bot_plan/bot_logs/supervisor.log` — only when run via `run_bot.sh`
+
+Operational notes: SIGHUP is handled like SIGINT/SIGTERM (graceful stop — no
+silent death when a terminal closes); the shutdown tail itself is bounded
+(websocket close timeout 2s + 20s watchdog → force-exit, supervisor restarts);
+single-instance flock prevents two bots on the same host; every external call
+(Telegram/Jupiter/DexScreener/Helius/SOL oracles) is time-boxed and fails open.
 
 ## Tests
 
@@ -196,5 +217,9 @@ systemctl status sol-bot && tail -f /opt/sol-bot/bot_plan/bot_logs/bot.log
 
 Notes: keep `DRY_RUN=true` until you're ready for real orders; logs land in
 `bot_plan/bot_logs/` (absolute paths) and stderr/tracebacks in
-`journalctl -u sol-bot -e`. The unit sets `TZ=Asia/Tehran` to match local
-timestamps — edit `Environment=` in the unit if you prefer UTC.
+`journalctl -u sol-bot -e` (systemd) or `bot_plan/bot_logs/supervisor.log`
+(`run_bot.sh`). The unit sets `TZ=Asia/Tehran` to match local timestamps —
+edit `Environment=` if you prefer UTC. First deployment is paper-only; flip
+`DRY_RUN=false` + `systemctl --user restart sol-bot` (or `run_bot.sh restart`)
+only when you are ready for real orders — and then run the bot on **one**
+machine (the single-instance lock is per-host, two hosts would double-buy).
