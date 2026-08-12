@@ -86,7 +86,13 @@ async def main() -> None:
     notifier = build_telegram_bot(gate, stats, on_stop=_telegram_stop)
 
     loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
+    # SIGTERM/SIGINT: graceful. SIGHUP too: a closed terminal/SSH session
+    # must not kill the bot silently (default action terminates with no log).
+    # Under systemd the clean exit then triggers Restart=always.
+    sigs = [signal.SIGINT, signal.SIGTERM]
+    if hasattr(signal, "SIGHUP"):
+        sigs.append(signal.SIGHUP)
+    for sig in sigs:
         try:
             loop.add_signal_handler(sig, _shutdown)
         except NotImplementedError:  # Windows

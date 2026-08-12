@@ -1,0 +1,20 @@
+[Unit]
+Description=Solana Pump.fun sniper bot (dry-run safe)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/mdev/Programming/new_sol_automate_bot
+ExecStart=/home/mdev/Programming/new_sol_automate_bot/.venv/bin/python src/main.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+# bot.log is written by the bot's own FileHandler; stderr/tracebacks -> journald
+# (journalctl --user -u sol-bot.service -e)
+StandardOutput=journal
+StandardError=journal
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target
