@@ -4,7 +4,7 @@
 APP_DIR="$1"
 cd "$APP_DIR" || exit 1
 PY="$APP_DIR/.venv/bin/python"
-LOG="$APP_DIR/bot_plan/bot_logs/supervisor.log"
+LOG="$APP_DIR/bot_logs/supervisor.log"
 mkdir -p "$(dirname "$LOG")"
 while true; do
   echo "[$(date '+%F %T')] supervisor: starting bot" >> "$LOG"

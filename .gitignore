@@ -19,6 +19,7 @@ journal.json
 .sniper-bot.lock
 
 # replay data (multi-GB, derived) — keep out of git
+bot_plan/
 bot_plan/parquet/
 bot_plan/downloads/
 .prime/

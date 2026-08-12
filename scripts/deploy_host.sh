@@ -88,7 +88,7 @@ sleep 6
 systemctl status sol-bot.service --no-pager | grep -E "Active|Main PID|Memory"
 echo
 echo "--- log tail ---"
-tail -n 4 "$APP_DIR/bot_plan/bot_logs/bot.log" 2>/dev/null || tail -n 4 "$APP_DIR/bot.log"
+tail -n 4 "$APP_DIR/bot_logs/bot.log" 2>/dev/null || tail -n 4 "$APP_DIR/bot.log"
 echo
 echo "DONE. Commands:  systemctl status|restart|stop sol-bot   |   journalctl -u sol-bot -e"
 else
@@ -98,7 +98,7 @@ else
   bash "$APP_DIR/scripts/run_bot.sh" status
   echo
   echo "--- log tail ---"
-  tail -n 4 "$APP_DIR/bot_plan/bot_logs/bot.log" 2>/dev/null || tail -n 4 "$APP_DIR/bot.log"
+  tail -n 4 "$APP_DIR/bot_logs/bot.log" 2>/dev/null || tail -n 4 "$APP_DIR/bot.log"
   echo
   echo "DONE. Commands:  bash scripts/run_bot.sh {start|stop|status|restart}"
   echo "NOTE: no auto-start on boot (no systemd). Add to crontab:"

@@ -78,4 +78,5 @@ def append_trade_log(row: dict[str, Any]) -> None:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         if new_file:
             writer.writeheader()
-        writer.writerow({k: row.get(k, "") for k in fieldnames})
+        ts = row.get("ts") or _now_iso()
+        writer.writerow({k: (ts if k == "ts" else row.get(k, "")) for k in fieldnames})

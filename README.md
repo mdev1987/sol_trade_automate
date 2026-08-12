@@ -154,7 +154,7 @@ bash scripts/run_bot.sh {start|stop|status|restart}
 
 - `start` = `nohup` a supervisor loop: runs `src/main.py`, auto-restarts 5s
   after any exit (crash or OOM), pidfile `.sniper-bot-super.pid`;
-  logs → `bot_plan/bot_logs/supervisor.log`
+  logs → `bot_logs/supervisor.log`
 - `stop` = kill the supervisor first (no re-spawn race), graceful SIGTERM,
   ≤25s grace, then kill -9 stragglers — **never leaves an orphan bot**
 - add `@reboot cd /opt/sol-bot && bash scripts/run_bot.sh start` to crontab
@@ -168,10 +168,10 @@ otherwise → `run_bot.sh`).
 
 ## Logs
 
-- `bot_plan/bot_logs/bot.log` — runtime log (absolute paths, CWD-independent)
-- `bot_plan/bot_logs/journal.json` — trade journal (JSONL)
-- `bot_plan/bot_logs/trade_log.csv` — trade history
-- `bot_plan/bot_logs/supervisor.log` — only when run via `run_bot.sh`
+- `bot_logs/bot.log` — runtime log (absolute paths, CWD-independent)
+- `bot_logs/journal.json` — trade journal (JSONL)
+- `bot_logs/trade_log.csv` — trade history
+- `bot_logs/supervisor.log` — only when run via `run_bot.sh`
 
 Operational notes: SIGHUP is handled like SIGINT/SIGTERM (graceful stop — no
 silent death when a terminal closes); the shutdown tail itself is bounded
@@ -221,12 +221,12 @@ bash scripts/deploy_host.sh # deploys right here in the clone (no arg = repo roo
 ```
 
 # 4) check
-systemctl status sol-bot && tail -f /opt/sol-bot/bot_plan/bot_logs/bot.log
+systemctl status sol-bot && tail -f /opt/sol-bot/bot_logs/bot.log
 ```
 
 Notes: keep `DRY_RUN=true` until you're ready for real orders; logs land in
-`bot_plan/bot_logs/` (absolute paths) and stderr/tracebacks in
-`journalctl -u sol-bot -e` (systemd) or `bot_plan/bot_logs/supervisor.log`
+`bot_logs/` (absolute paths) and stderr/tracebacks in
+`journalctl -u sol-bot -e` (systemd) or `bot_logs/supervisor.log`
 (`run_bot.sh`). The unit sets `TZ=Asia/Tehran` to match local timestamps —
 edit `Environment=` if you prefer UTC. First deployment is paper-only; flip
 `DRY_RUN=false` + `systemctl --user restart sol-bot` (or `run_bot.sh restart`)

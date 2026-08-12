@@ -17,7 +17,7 @@ start() {
   nohup bash "$APP_DIR/scripts/_supervise.sh" "$APP_DIR" >/dev/null 2>&1 &
   echo $! > "$PIDFILE"
   sleep 1
-  echo "started (supervisor pid $(cat "$PIDFILE")) — logs: bot_plan/bot_logs/{bot.log,supervisor.log}"
+  echo "started (supervisor pid $(cat "$PIDFILE")) — logs: bot_logs/{bot.log,supervisor.log}"
 }
 
 stop() {
