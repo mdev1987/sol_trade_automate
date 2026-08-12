@@ -235,6 +235,20 @@ class Settings:
             + "/price/v3"
         )
     )
+    # secondary SOL/USD oracles: tried in order after the primary when the
+    # higher-priority endpoint is unreachable (transient DNS/network must
+    # never cost us the price — every source is fail-open)
+    pumpcoins_sol_price_url: str = field(
+        default_factory=lambda: os.getenv(
+            "PUMPCOINS_SOL_PRICE_URL", "https://pumpcoins.net/api/sol-price"
+        )
+    )
+    coingecko_sol_price_url: str = field(
+        default_factory=lambda: os.getenv(
+            "COINGECKO_SOL_PRICE_URL",
+            "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd",
+        )
+    )
 
     def validate(self) -> None:
         """Fail fast on missing secrets (only when going live)."""

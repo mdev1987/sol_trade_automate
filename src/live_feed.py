@@ -28,6 +28,8 @@ log = logging.getLogger("sniper_bot.live_feed")
 TRADE_ACTIONS = ("buy", "sell")
 PRICE_MAX_AGE_S = 10.0  # a price older than this is stale
 SOL_USD_TTL_S = 60.0
+# per-source cap so one hung oracle can't stall the chain (5s x up to 4 sources)
+SOL_USD_SOURCE_TIMEOUT_S = 5.0
 RECONNECT_BASE_S = 1.0
 RECONNECT_MAX_S = 30.0
 
@@ -156,19 +158,86 @@ class LivePriceFeed:
         """Seconds since the current stream connection was established."""
         return time.monotonic() - self._connected_at if self._connected_at else None
 
+    async def _sol_usd_dexscreener(self) -> float | None:
+        """Primary SOL/USD oracle — DexScreener (measured 270ms, 3/3).
+
+        Picks the highest-liquidity SOL pair's priceUsd from /tokens/{mint}.
+        None on any failure (fail-open; the chain moves to the next source).
+        """
+        try:
+            url = f"{settings.dexscreener_base}/latest/dex/tokens/{SOL_MINT}"
+            r = await self._client.get(url, timeout=SOL_USD_SOURCE_TIMEOUT_S)
+            r.raise_for_status()
+            pairs = r.json().get("pairs") or []
+            if not pairs:
+                return None
+            best = max(pairs, key=lambda p: (p.get("liquidity") or {}).get("usd") or 0)
+            usd = float(best["priceUsd"])
+            return usd if usd > 0 else None
+        except Exception:  # noqa: BLE001 — fail-open
+            log.debug("sol_usd dexscreener failed")
+            return None
+
+    async def _sol_usd_jupiter(self) -> float | None:
+        """SOL/USD via Jupiter /price/v3. None on any failure."""
+        try:
+            r = await self._client.get(
+                settings.jupiter_price_base, params={"ids": SOL_MINT},
+                timeout=SOL_USD_SOURCE_TIMEOUT_S,
+            )
+            r.raise_for_status()
+            usd = float(r.json()[SOL_MINT]["usdPrice"])
+            return usd if usd > 0 else None
+        except Exception:  # noqa: BLE001
+            log.debug("sol_usd jupiter fetch failed")
+            return None
+
+    async def _sol_usd_pumpcoins(self) -> float | None:
+        """SOL/USD via pumpcoins.net ({"asOf":..., "usd":..., "change24h":...})."""
+        try:
+            r = await self._client.get(
+                settings.pumpcoins_sol_price_url, timeout=SOL_USD_SOURCE_TIMEOUT_S
+            )
+            r.raise_for_status()
+            usd = float(r.json()["usd"])
+            return usd if usd > 0 else None
+        except Exception:  # noqa: BLE001 — fail-open
+            log.debug("sol_usd pumpcoins fallback failed")
+            return None
+
+    async def _sol_usd_coingecko(self) -> float | None:
+        """SOL/USD via CoinGecko simple/price (free tier, 429-prone — last)."""
+        try:
+            r = await self._client.get(
+                settings.coingecko_sol_price_url, timeout=SOL_USD_SOURCE_TIMEOUT_S
+            )
+            r.raise_for_status()
+            usd = float(r.json()["solana"]["usd"])
+            return usd if usd > 0 else None
+        except Exception:  # noqa: BLE001
+            log.debug("sol_usd coingecko failed")
+            return None
+
     async def sol_usd(self) -> float | None:
-        """SOL price in USD (cached 60s; None on failure)."""
+        """SOL price in USD (cached SOL_USD_TTL_S; None only if never fetched).
+
+        Source order (measured): DexScreener (270ms) -> Jupiter (307ms) ->
+        pumpcoins.net (308ms) -> CoinGecko (461ms, 429-prone). Every source is
+        fail-open and time-boxed; on total failure the last known (possibly
+        stale) value is returned so callers never crash.
+        """
         if self._sol_usd is not None and time.monotonic() - self._sol_usd_ts < SOL_USD_TTL_S:
             return self._sol_usd
-        try:
-            r = await self._client.get(settings.jupiter_price_base, params={"ids": SOL_MINT})
-            r.raise_for_status()
-            data = r.json()
-            self._sol_usd = float(data[SOL_MINT]["usdPrice"])
+        usd: float | None = await self._sol_usd_dexscreener()
+        if usd is None:
+            usd = await self._sol_usd_jupiter()
+        if usd is None:
+            usd = await self._sol_usd_pumpcoins()
+        if usd is None:
+            usd = await self._sol_usd_coingecko()
+        if usd is not None:
+            self._sol_usd = usd
             self._sol_usd_ts = time.monotonic()
-        except Exception:  # noqa: BLE001
-            log.debug("sol_usd fetch failed")
-            return self._sol_usd  # possibly stale value
         return self._sol_usd
 
     async def price_usd(self, mint: str, max_age_s: float = PRICE_MAX_AGE_S) -> float | None:
