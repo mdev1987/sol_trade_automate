@@ -1,9 +1,20 @@
 #!/bin/bash
-# One-shot provisioning for a fresh host (run as root, from the app dir).
-# Usage: sudo bash scripts/deploy_host.sh /opt/sol-bot
+# One-shot provisioning for a fresh host.
+# Usage: bash scripts/deploy_host.sh [/path/to/app]
+#   no arg  -> deploy in the repo you are standing in (git clone / tarball)
+#   with arg -> deploy at that path (created if missing, e.g. /opt/sol-bot)
 set -euo pipefail
-APP_DIR="${1:-/opt/sol-bot}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+APP_DIR="${1:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+mkdir -p "$APP_DIR"
 cd "$APP_DIR"
+if [ ! -f src/main.py ]; then
+  echo "ERROR: $APP_DIR is not the bot repo (src/main.py missing)."
+  echo "Run from the cloned repo:  bash scripts/deploy_host.sh"
+  echo "or pass the app dir:       bash scripts/deploy_host.sh /opt/sol-bot"
+  exit 1
+fi
+echo "== deploying in $APP_DIR =="
 
 echo "== [1/5] uv =="
 if ! command -v uv >/dev/null 2>&1; then
@@ -34,7 +45,9 @@ PY
 
 echo "== [4/5] .env =="
 if [ ! -f .env ]; then
-  echo "ERROR: .env missing — copy it:  scp .env user@HOST:/tmp/.env && cp /tmp/.env $APP_DIR/.env"
+  echo "ERROR: .env missing — it is gitignored, so a clone has none."
+  echo "  a) copy your dev .env:   scp .env user@HOST:/tmp/.env && cp /tmp/.env $APP_DIR/.env"
+  echo "  b) or bootstrap one:     cp .env.example .env   (then fill in BOT_TOKEN/CHAT_ID/PRIVATE_KEY/...)"
   exit 1
 fi
 chmod 600 .env
