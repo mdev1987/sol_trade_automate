@@ -182,8 +182,13 @@ scp .env user@HOST:/tmp/.env          # secrets travel separately
 sudo mkdir -p /opt/sol-bot && sudo tar xzf /tmp/sol-bot-ship.tgz -C /opt/sol-bot
 sudo cp /tmp/.env /opt/sol-bot/.env && sudo chmod 600 /opt/sol-bot/.env
 
-# 3) host: provision venv + systemd service (auto-restart, starts on boot)
+# 3) host: provision venv + supervisor
 sudo bash /opt/sol-bot/scripts/deploy_host.sh /opt/sol-bot
+#   - with systemd: installs sol-bot.service (auto-restart, starts on boot)
+#   - without systemd (containers/small hosts): falls back to a simple
+#     supervisor  →  bash scripts/run_bot.sh {start|stop|status|restart}
+#     (nohup + auto-restart every 5s; add "@reboot ... run_bot.sh start"
+#     to crontab if you want it back after host reboot)
 
 # 4) check
 systemctl status sol-bot && tail -f /opt/sol-bot/bot_plan/bot_logs/bot.log

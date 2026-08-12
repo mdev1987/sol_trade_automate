@@ -44,8 +44,9 @@ else
   echo "!!! WARNING: DRY_RUN is NOT true — this host will place REAL orders"
 fi
 
-echo "== [5/5] systemd service =="
-cat > /etc/systemd/system/sol-bot.service <<UNIT
+echo "== [5/5] process supervisor =="
+if command -v systemctl >/dev/null 2>&1; then
+  echo "systemctl found — installing system service"
 [Unit]
 Description=Solana Pump.fun sniper bot (paper: DRY_RUN=true)
 After=network-online.target
@@ -76,3 +77,16 @@ echo "--- log tail ---"
 tail -n 4 "$APP_DIR/bot_plan/bot_logs/bot.log" 2>/dev/null || tail -n 4 "$APP_DIR/bot.log"
 echo
 echo "DONE. Commands:  systemctl status|restart|stop sol-bot   |   journalctl -u sol-bot -e"
+else
+  echo "no systemctl — using simple supervisor (nohup + auto-restart)"
+  bash "$APP_DIR/scripts/run_bot.sh" start
+  sleep 6
+  bash "$APP_DIR/scripts/run_bot.sh" status
+  echo
+  echo "--- log tail ---"
+  tail -n 4 "$APP_DIR/bot_plan/bot_logs/bot.log" 2>/dev/null || tail -n 4 "$APP_DIR/bot.log"
+  echo
+  echo "DONE. Commands:  bash scripts/run_bot.sh {start|stop|status|restart}"
+  echo "NOTE: no auto-start on boot (no systemd). Add to crontab:"
+  echo "  @reboot cd $APP_DIR && bash scripts/run_bot.sh start"
+fi
