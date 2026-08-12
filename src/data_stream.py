@@ -107,7 +107,7 @@ class PumpApiStream:
         """Yield every raw event (create + buy/sell + control)."""
         while True:
             try:
-                async with websockets.connect(self.url) as ws:
+                async with websockets.connect(self.url, close_timeout=2.0) as ws:
                     log.info("PumpAPI connected: %s", self.url)
                     async for message in ws:
                         try:
@@ -134,7 +134,7 @@ class PumpDevStream:
         while True:
             try:
                 extra = {"x-api-key": self.api_key} if self.api_key else {}
-                async with websockets.connect(self.url, extra_headers=extra) as ws:
+                async with websockets.connect(self.url, extra_headers=extra, close_timeout=2.0) as ws:
                     log.info("PumpDev connected: %s", self.url)
                     await ws.send(json.dumps({"method": "subscribeNewToken"}))
                     delay = 1.0

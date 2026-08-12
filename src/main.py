@@ -19,6 +19,7 @@ Control:
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
 import sys
 import time as _t
@@ -63,6 +64,37 @@ async def heartbeat_loop(notifier, stats, t0) -> None:
             raise
         except Exception:  # noqa: BLE001 — a failed card must not kill main
             log.exception("Heartbeat card failed")
+
+
+SHUTDOWN_TAIL_TIMEOUT_S = 20.0  # hard cap on graceful-shutdown cleanup
+
+
+async def _shutdown_tail(elapsed, live_feed, router, dev_rep, notifier, stats) -> None:
+    """Final cleanup after the trade loop has stopped. Best-effort and
+    bounded: a stuck DNS/websocket/telegram close must never wedge shutdown
+    (the supervisor restarts us anyway)."""
+    await live_feed.stop()
+    await router.stop()
+    if dev_rep is not None:
+        await dev_rep.close()
+    await notifier.send_stopped(
+        elapsed,
+        stats.trades,
+        stats.winrate * 100.0,
+        stats.realized_pnl_usd,
+        stats.balance_usd,
+        stats.exit_counts,
+        skips="",
+        quotes=stats.quote_gate,
+    )
+    await notifier.close()
+    log.info(
+        "Bye. (final stats: %s trades, %d wins, pnl $%.2f, balance $%.2f)",
+        stats.trades,
+        stats.wins,
+        stats.realized_pnl_usd,
+        stats.balance_usd,
+    )
 
 
 async def main() -> None:
@@ -151,28 +183,25 @@ async def main() -> None:
     for task in (scanner_task, bot_task, heartbeat_task):
         task.cancel()
     await asyncio.gather(scanner_task, bot_task, heartbeat_task, return_exceptions=True)
-    await live_feed.stop()
-    await router.stop()
-    if dev_rep is not None:
-        await dev_rep.close()
-    await notifier.send_stopped(
-        _t.monotonic() - t0,
-        stats.trades,
-        stats.winrate * 100.0,
-        stats.realized_pnl_usd,
-        stats.balance_usd,
-        stats.exit_counts,
-        skips="",
-        quotes=stats.quote_gate,
-    )
-    await notifier.close()
-    log.info(
-        "Bye. (final stats: %s trades, %d wins, pnl $%.2f, balance $%.2f)",
-        stats.trades,
-        stats.wins,
-        stats.realized_pnl_usd,
-        stats.balance_usd,
-    )
+    try:
+        await asyncio.wait_for(
+            _shutdown_tail(
+                _t.monotonic() - t0,
+                live_feed,
+                router,
+                dev_rep,
+                notifier,
+                stats,
+            ),
+            timeout=SHUTDOWN_TAIL_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        log.error(
+            "Graceful shutdown exceeded %ds — forcing exit (supervisor will restart)",
+            SHUTDOWN_TAIL_TIMEOUT_S,
+        )
+        os._exit(1)
+    
 
 
 if __name__ == "__main__":
