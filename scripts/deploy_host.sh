@@ -13,7 +13,7 @@ fi
 uv --version
 
 echo "== [2/5] slim venv (runtime deps only, ~47MB) =="
-uv venv .venv --python 3.11
+uv venv .venv --python 3.11 --clear
 uv pip install --python .venv/bin/python \
   solders requests python-dotenv base58 websockets httpx telegramify-markdown python-telegram-bot
 
@@ -45,8 +45,9 @@ else
 fi
 
 echo "== [5/5] process supervisor =="
-if command -v systemctl >/dev/null 2>&1; then
+if command -v systemctl >/dev/null 2>&1 && [ -d /etc/systemd/system ] && [ -w /etc/systemd/system ]; then
   echo "systemctl found — installing system service"
+  cat > /etc/systemd/system/sol-bot.service <<UNIT
 [Unit]
 Description=Solana Pump.fun sniper bot (paper: DRY_RUN=true)
 After=network-online.target
