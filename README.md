@@ -164,3 +164,32 @@ journalctl -u sniper-bot -f
 uv run python tests/_smoke_test.py        # pure-logic checks, no network
 uv run python tests/_integration_test.py  # end-to-end trade cycle, mocked network
 ```
+
+## Deploy on a small host (3GB disk / 4GB RAM / 2GHz)
+
+Measured footprint: **~47MB venv + ~270KB code** — the bot is asyncio/I-O bound,
+runs at ~50-60MB RSS, and needs **no inbound ports** (Telegram polling, all
+feeds/APIs outbound). Backtest data (58GB of parquet) stays on the dev machine —
+**do not run backtests on the host**.
+
+```bash
+# 1) local: build the ship tarball (excludes .git/.venv/bot_plan/.env)
+scripts/ship_for_host.sh /tmp/sol-bot-ship.tgz
+scp /tmp/sol-bot-ship.tgz user@HOST:/tmp/
+scp .env user@HOST:/tmp/.env          # secrets travel separately
+
+# 2) host:
+sudo mkdir -p /opt/sol-bot && sudo tar xzf /tmp/sol-bot-ship.tgz -C /opt/sol-bot
+sudo cp /tmp/.env /opt/sol-bot/.env && sudo chmod 600 /opt/sol-bot/.env
+
+# 3) host: provision venv + systemd service (auto-restart, starts on boot)
+sudo bash /opt/sol-bot/scripts/deploy_host.sh /opt/sol-bot
+
+# 4) check
+systemctl status sol-bot && tail -f /opt/sol-bot/bot_plan/bot_logs/bot.log
+```
+
+Notes: keep `DRY_RUN=true` until you're ready for real orders; logs land in
+`bot_plan/bot_logs/` (absolute paths) and stderr/tracebacks in
+`journalctl -u sol-bot -e`. The unit sets `TZ=Asia/Tehran` to match local
+timestamps — edit `Environment=` in the unit if you prefer UTC.
