@@ -211,6 +211,15 @@ sudo bash /opt/sol-bot/scripts/deploy_host.sh /opt/sol-bot
 #     (nohup + auto-restart every 5s; add "@reboot ... run_bot.sh start"
 #     to crontab if you want it back after host reboot)
 
+**Alternative — git clone instead of tarball** (no /opt/sol-bot needed):
+
+```bash
+git clone git@github.com:mdev1987/sol_trade_automate.git
+cd sol_trade_automate
+cp .env.example .env        # or scp your dev .env:  scp .env user@HOST:~/sol_trade_automate/.env
+bash scripts/deploy_host.sh # deploys right here in the clone (no arg = repo root)
+```
+
 # 4) check
 systemctl status sol-bot && tail -f /opt/sol-bot/bot_plan/bot_logs/bot.log
 ```
