@@ -1,29 +1,36 @@
-"""Replay backtest of the sniper strategy against PumpAPI historical archives.
+"""Replay backtest of the debot smart-money SIGNAL strategy against PumpAPI
+historical archives — apples-to-apples with tools/backtest.py (launch sniper).
 
-Streams the parquet one batch at a time (never loads more than a batch in
-RAM — safe on 16GB machines) and replays the EXACT live pipeline:
-
-  create -> TokenLaunch.from_event -> rug_check -> passes_feed_filters ->
-            score_feed (>= MIN_SCORE) -> queue (FIFO, MAX_CANDIDATE_AGE_MIN)
-  entry  -> after ENTRY_LATENCY_S, fill at the next buy event of that mint
-            with slippage tiers (QuoteConfig.slippage_for)
-  veto   -> replay of the dev-reputation rule: dev with >= 3 creates in the
-            replay window is vetoed (mirrors the live Helius serial-launcher veto)
+Differs from the launch backtest in ONE way: entry triggers are debot signal
+events (bot_plan/signal_raw/channel_list.json) instead of pump.fun create
+events. Every downstream gate is shared:
+  entry  -> arm at signal create_time + ENTRY_LATENCY_S, fill at the mint's
+            next buy event, fill-time liquidity floor (quote gate). The
+            entry-mult gate FAILS OPEN for signals (debot prices are
+            USD-normalized, not comparable to the on-chain launch price —
+            the pump band below is the real anti-chase rule).
   monitor-> TP / SL / dead_pool / no_trades / max_hold on buy+sell events
-  risk   -> 60/40 compounding (compounding.next_play_amount), loss pause
-            (2 losses -> 5 min), play floor, daily loss kill switch
+  risk   -> 60/40 compounding, loss pause, play floor, daily loss kill switch
 
-Replay-data caveats (documented in bot_plan/pumpapi_historical-replay.md):
-  * real execution is slower than replay — ENTRY_LATENCY_S (default 2s)
-    models our measured live latency; be conservative.
-  * bundle atomicity (same-mint events within ~3ms) is not modeled in v1.
-  * replay create events lack `initialBuy`; it is inferred as dev_sol/price
-    (same semantics as the live filter: dev bought >0 at launch).
+Pattern gate A/B (the researched signal pattern):
+  --mode raw    accept every signal event (no pattern filter)
+  --mode band   pump band only: max_price_gain in [min_gain, max_gain]
+  --mode full   live scanner gate: pump band + liquidity band + holders +
+                top10 + mcap + vol24 + wallets + tiers + score >= min_score
+                (default, mirrors src/signal_scanner.gate_signal/score_signal)
+
+Replay-data caveats (same as launch backtest):
+  * ENTRY_LATENCY_S (2s) models measured live latency; the live bot also polls
+    debot every 20s, so real reaction is up to ~20s later than create_time —
+    entry fills here are optimistic by that amount.
+  * signal create_time is when debot fired the alert; the token's first replay
+    buy may be a few seconds after (pump_swap/meteora events included).
 
 Usage:
-  uv run python tools/backtest.py --data bot_plan/parquet/2026-07-21 \
-      [--sol-usd 150] [--entry-latency-s 2.0] [--max-trades 0] \
-      [--out /tmp/backtest_result.json]
+  uv run python tools/backtest_signals.py \
+      --data bot_plan/parquet/2026-08-12 \
+      --signals bot_plan/signal_raw/channel_list.json \
+      --mode full [--out bot_plan/signal_backtest_full.json]
 """
 
 from __future__ import annotations
@@ -41,69 +48,137 @@ import pyarrow.parquet as pq
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from compounding import next_play_amount
 from config import QuoteConfig, settings
-from data_stream import TokenLaunch
-from rug_detection import rug_check
-from scanner_filter import passes_feed_filters
-from scoring_algorithm import score_feed
+from signal_scanner import SignalGate, gate_signal, score_signal
 
-# columns the pipeline needs (raw key names preserved)
-COLS = ["timestamp", "action", "signature", "mint", "txSigner", "price",
-        "tokenAmount", "quoteAmount", "marketCapQuote", "supply",
-        "tokensInPool", "quoteInPool", "quoteMint", "name", "symbol",
-        "isMayhemMode", "isCashbackEnabled", "burnedLiquidity",
-        "freezeAuthority", "mintAuthority", "poolFeeRate"]
+COLS = ["timestamp", "action", "mint", "poolId", "price", "quoteInPool"]
 
 DEAD_POOL_LIQUIDITY_USD = 25.0
 
 
-def make_launch(row: dict) -> TokenLaunch:
-    """Build a TokenLaunch from a replay create row (infer missing initialBuy)."""
-    launch = TokenLaunch.from_event(row, source="pumpapi")
-    # replay creates lack initialBuy -> infer dev's launch buy (tokens)
-    if launch.initial_buy_tokens <= 0 and launch.dev_sol and row.get("price"):
-        launch.initial_buy_tokens = launch.dev_sol / row["price"]
-        row["initialBuy"] = launch.initial_buy_tokens
-    return launch
+def _f(v) -> float | None:
+    """Coerce a value to float, returning None for junk/empty."""
+    try:
+        if v in (None, "", "null"):
+            return None
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _i(v) -> int:
+    """Coerce a value to int, returning 0 for junk/empty."""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
+def load_signal_candidates(signals_path: str, mode: str, min_signals: int = 0,
+                           band_min: float | None = None,
+                           band_max: float | None = None) -> list[dict]:
+    """Load signal events, dedup (same token within 60s), apply the mode gate.
+
+    Returns candidates sorted by create_time: {create_time, mint, symbol,
+    score, gain, gate_reason}.
+    """
+    raw = json.loads(Path(signals_path).read_text())
+    results = raw["results"]
+    meta = raw["meta"]
+    gate = SignalGate()
+
+    candidates: list[dict] = []
+    seen_recent: dict[str, float] = {}  # mint -> last create_time accepted
+    skipped: Counter = Counter()
+    for ev in results:
+        mint = ev.get("token") or ""
+        ct = _f(ev.get("create_time")) or 0.0
+        if not mint or not ct:
+            skipped["no_token"] += 1
+            continue
+        if mint in seen_recent and ct - seen_recent[mint] < 60.0:
+            skipped["dup_event"] += 1
+            continue
+
+        token_meta = (meta.get("tokens") or {}).get(mint) or {}
+        sig_meta = (meta.get("signals") or {}).get(mint) or {}
+        metrics = (meta.get("metrics") or {}).get(mint) or {}
+        gain = _f(sig_meta.get("max_price_gain")) or 0.0
+
+        if mode == "raw":
+            passed, reason = True, ""
+        elif mode == "band":
+            lo = gate.min_gain if band_min is None else band_min
+            hi = gate.max_gain if band_max is None else band_max
+            if gain <= 0:
+                passed, reason = False, "no_gain"
+            elif gain < lo:
+                passed, reason = False, f"gain:{gain:.2f}<{lo}"
+            elif gain > hi:
+                passed, reason = False, f"gain:{gain:.2f}>{hi}"
+            else:
+                passed, reason = True, ""
+        else:  # full — live scanner gate, freshness disabled (replayed at signal time)
+            passed, reason = gate_signal(
+                ev, token_meta, sig_meta, metrics, gate, now=ct
+            )
+        if not passed:
+            skipped[reason.split(":")[0]] += 1
+            continue
+
+        if min_signals > 0 and (_i(sig_meta.get("signal_count")) or 0) < min_signals:
+            skipped[f"signals<{min_signals}"] += 1
+            continue
+
+        score = score_signal(ev, token_meta, sig_meta, metrics, gate)
+        if mode == "full" and score < settings.min_score:
+            skipped[f"score<{settings.min_score}"] += 1
+            continue
+
+        candidates.append({
+            "create_time": ct,
+            "mint": mint,
+            "pool": metrics.get("pair") or "",
+            "symbol": (token_meta.get("symbol") or mint[:6]),
+            "score": score,
+            "gain": round(gain, 3),
+            "reason": reason,
+        })
+        seen_recent[mint] = ct
+
+    candidates.sort(key=lambda c: c["create_time"])
+    return candidates, skipped
 
 
 def main() -> None:
-    """Replay the launch strategy over a parquet folder and write results."""
+    """Replay the signal strategy over parquet + signal events, write results."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True, help="parquet folder (HH.parquet files)")
-    ap.add_argument("--sol-usd", type=float, default=150.0, help="SOL price for USD conversion")
+    ap.add_argument("--signals", required=True,
+                    help="bot_plan/signal_raw/channel_list.json")
+    ap.add_argument("--mode", choices=["raw", "band", "full"], default="full")
+    ap.add_argument("--band-min", type=float, default=None, help="override band low edge")
+    ap.add_argument("--band-max", type=float, default=None, help="override band high edge")
+    ap.add_argument("--min-signals", type=int, default=0,
+                    help="only candidates with signal_count >= this (0 = off)")
+    ap.add_argument("--sol-usd", type=float, default=150.0,
+                    help="static SOL/USD fallback (ignored if --sol-usd-file given)")
     ap.add_argument("--sol-usd-file", default=None,
                     help="JSON {hour_epoch_sec: usd} realtime SOL/USD series (overrides --sol-usd)")
     ap.add_argument("--entry-latency-s", type=float, default=2.0)
     ap.add_argument("--max-trades", type=int, default=0, help="0 = unlimited")
-    ap.add_argument("--out", default="/tmp/backtest_result.json")
+    ap.add_argument("--out", default="/tmp/signal_backtest_result.json")
     ap.add_argument("--verbose", action="store_true")
-    ap.add_argument("--daily-loss-limit", type=float, default=None,
-                    help="halt at this daily PnL (default: settings/10)")
-    ap.add_argument("--no-veto", action="store_true", help="disable the dev-rep replay veto")
     ap.add_argument("--min-liq", type=float, default=None,
-                    help="skip fills when pool liquidity is below this USD "
-                         "(default: settings.min_liquidity_usd, i.e. the deployed floor)")
+                    help="fill liquidity floor in USD (default: settings.min_liquidity_usd)")
     ap.add_argument("--max-hold-min", type=float, default=None)
-    ap.add_argument("--min-score", type=float, default=None,
-                    help="score gate (default: settings.min_score, deployed 60)")
-    ap.add_argument("--fee-bps", type=float, default=100.0,
-                    help="per-swap protocol fee in bps (pump.fun = 100 = 1 pct each side)")
-    ap.add_argument("--min-mult", type=float, default=0.0,
-                    help="skip fills unless price/create-price >= this (momentum gate)")
-    ap.add_argument("--max-mult", type=float, default=None,
-                    help="skip fills when price/create-price exceeds this "
-                         "(default: settings.max_entry_mult, i.e. the deployed "
-                         "MAX_ENTRY_MULT gate — 0 = off)")
+    ap.add_argument("--fee-bps", type=float, default=100.0)
     ap.add_argument("--take-profit", type=float, default=None)
     ap.add_argument("--stop-loss", type=float, default=None)
     ap.add_argument("--slippage-model", choices=["tier", "impact"], default="tier",
                     help="tier=QuoteConfig.slippage_for tolerance as cost (conservative, "
                          "default); impact=2*trade_size/liquidity realized price impact")
+    ap.add_argument("--daily-loss-limit", type=float, default=None)
     args = ap.parse_args()
-    if args.daily_loss_limit is not None:
-        daily_limit = args.daily_loss_limit
-    else:
-        daily_limit = settings.daily_loss_limit
 
     sol_usd = args.sol_usd
     sol_series: dict[int, float] = {}
@@ -124,8 +199,14 @@ def main() -> None:
             return sol_series[h] * (1 - frac) + sol_series[nxt] * frac
         return sol_series.get(h, sol_series.get(nxt, sol_usd))
     min_liq = settings.min_liquidity_usd if args.min_liq is None else args.min_liq
-    max_mult = settings.max_entry_mult if args.max_mult is None else args.max_mult
     quote = QuoteConfig()
+
+    candidates, skipped = load_signal_candidates(args.signals, args.mode, args.min_signals,
+                                             args.band_min, args.band_max)
+    print(f"signals: {len(candidates)} accepted "
+          f"(mode={args.mode}, skipped={dict(skipped)})", flush=True)
+    if not candidates:
+        raise SystemExit("no accepted candidates")
 
     files = sorted(glob.glob(str(Path(args.data) / "*.parquet")))
     if not files:
@@ -133,27 +214,25 @@ def main() -> None:
     total_rows = sum(pq.ParquetFile(f).metadata.num_rows for f in files)
     print(f"backtest: {len(files)} hours, {total_rows:,} rows, "
           f"sol_usd=${sol_usd:g}, latency={args.entry_latency_s}s, "
-          f"floor=${min_liq:g}, score>={args.min_score if args.min_score is not None else settings.min_score:g}",
-          flush=True)
+          f"floor=${min_liq:g}", flush=True)
 
-    # ---- replay state (bounded: queues + one position + per-mint price maps)
-    pending = deque()  # (qualified_at_s, launch, score) FIFO — mirrors the bot queue
-    armed = None  # (fill_from_s, launch, score) candidate being entered
-    pos = None  # dict position
-    dev_creates = Counter()
+    # ---- state (mirrors tools/backtest.py + signal queue)
+    cand_i = 0
+    pending = deque()  # candidates armed at or before current replay time
+    armed = None
+    pos = None
     last_price: dict[str, float] = {}
     last_liq: dict[str, float] = {}
     last_trade_ts: dict[str, float] = {}
 
-    # ---- risk (mirrors RiskManager + compounding on replay time)
     play_amount = settings.starting_amount
     consec_losses = 0
     paused_until = 0.0
     daily_pnl = 0.0
-    daily_key = None  # UTC day id for the daily loss limit (resets at midnight)
+    daily_key = None  # UTC day id (local midnight for the loss limit)
     daily_halted_until = 0.0
 
-    stats = Counter()  # launches/rug/filter/score/vetoed/qualified/entries/exits...
+    stats = Counter({"candidates": len(candidates)})
     exit_reasons = Counter()
     trades = []
     t0 = time.time()
@@ -163,28 +242,28 @@ def main() -> None:
         if args.slippage_model == "impact":
             # realized price impact of the *exit* trade: size ~= position value,
             # impact ~ 2*size/liquidity (AMM constant-product), capped at 10%
-            val = pos["tokens"] * pos["last_price"] * sol_usd_at(pos["entered_at"])
-            if liq and liq > 0:
+            if pos is not None and liq and liq > 0:
+                val = pos["tokens"] * pos["last_price"] * sol_usd_at(pos["entered_at"])
                 return min(0.10, 2.0 * val / liq)
             return 0.0
         return quote.slippage_for(liq) / 10_000.0
 
-    def open_position(launch, score, fill_price, liq, ts_s):
+    def open_position(cand, fill_price, liq, ts_s):
         """Open a position: debit the play amount, remember entry + stops."""
         nonlocal play_amount, pos, armed
         usd_fill = fill_price * sol_usd_at(ts_s)
         fee = 1.0 - args.fee_bps / 10_000.0
         tokens = (play_amount * fee) / usd_fill if usd_fill > 0 else 0.0
         pos = {
-            "mint": launch.mint, "symbol": launch.symbol, "score": score,
+            "mint": cand["mint"], "symbol": cand["symbol"], "score": cand["score"],
+            "pool": cand["pool"],
             "entry_price_sol": fill_price, "entry_usd": usd_fill,
             "tokens": tokens, "amount": play_amount,
             "tp": fill_price * (args.take_profit or settings.take_profit),
             "sl": fill_price * (args.stop_loss or settings.stop_loss),
             "entered_at": ts_s, "last_price": fill_price,
             "entry_liq": liq, "last_liq": liq, "last_trade_ts": ts_s,
-            # momentum at fill: fill price vs the create event price (SOL)
-            "entry_mult": fill_price / max(launch.raw.get("price") or 0.0, 1e-30),
+            "gain": cand["gain"],
         }
         armed = None
 
@@ -199,9 +278,9 @@ def main() -> None:
         daily_pnl += pnl
         trades.append({
             "ts": round(ts_s, 1), "symbol": p["symbol"], "mint": p["mint"],
-            "score": round(p["score"], 1), "entry_usd": round(p["entry_usd"], 8),
+            "score": round(p["score"], 1), "gain": p["gain"],
+            "entry_usd": round(p["entry_usd"], 8),
             "entry_liq": round(p.get("entry_liq", 0.0), 0),
-            "entry_mult": round(p.get("entry_mult", 0.0), 2),
             "exit_reason": reason, "exit_usd": round(exit_price * sol_usd_at(ts_s), 8),
             "pnl": round(pnl, 4), "proceeds": round(proceeds, 4),
             "amount": round(p["amount"], 2), "held_s": round(ts_s - p["entered_at"], 1),
@@ -222,22 +301,20 @@ def main() -> None:
         """Take the oldest fresh candidate; drop stale ones (queue aging)."""
         nonlocal armed
         while pending:
-            q_at, launch, score = pending.popleft()
-            age = ts_s - q_at
+            cand = pending.popleft()
+            age = ts_s - cand["create_time"]
             if age > settings.max_candidate_age_min * 60:
                 stats["aged_out"] += 1
                 continue
-            armed = (max(ts_s, q_at + args.entry_latency_s), launch, score)
+            armed = (max(ts_s, cand["create_time"] + args.entry_latency_s), cand)
             return
         armed = None
 
     # ---------------- stream the replay ----------------
-    batch_i = 0
     halted = False
-    for fpath in files:  # files are hour-partitioned + sorted by timestamp
+    for fpath in files:
         pf = pq.ParquetFile(fpath)
         for rb in pf.iter_batches(batch_size=500_000, columns=COLS):
-            batch_i += 1
             d = rb.to_pydict()
             n = len(d["timestamp"])
             for i in range(n):
@@ -259,39 +336,25 @@ def main() -> None:
                     paused_until = 0.0
                     daily_halted_until = 0.0
 
-                if action == "create":
-                    if mint is None:
-                        continue
-                    stats["launches"] += 1
-                    row = {c: d[c][i] for c in COLS}
-                    dev = row.get("txSigner")
-                    if dev:
-                        dev_creates[dev] += 1
-                    try:
-                        launch = make_launch(row)
-                    except Exception:
-                        stats["parse_error"] += 1
-                        continue
-                    if not rug_check(launch, None, row).passed:
-                        stats["rug"] += 1
-                        continue
-                    passed, _ = passes_feed_filters(launch)
-                    if not passed:
-                        stats["filter"] += 1
-                        continue
-                    score = score_feed(launch)
-                    if score < (args.min_score if args.min_score is not None else settings.min_score):
-                        stats["score_skip"] += 1
-                        continue
-                    if not args.no_veto and dev and dev_creates[dev] >= 3:
-                        stats["dev_veto"] += 1  # replay of the Helius serial-launcher veto
-                        continue
-                    stats["qualified"] += 1
-                    pending.append((ts_s, launch, score))
-                    continue
+                # --- arm signal candidates whose create_time has arrived ---
+                while cand_i < len(candidates) and candidates[cand_i]["create_time"] <= ts_s:
+                    pending.append(candidates[cand_i])
+                    cand_i += 1
 
                 if action not in ("buy", "sell") or mint is None:
                     continue
+                # A mint can trade on multiple pools (bonding curve vs the
+                # post-graduation AMM) with INCOMPATIBLE price scales. Only the
+                # pool debot reported for this signal (metrics.pair == poolId)
+                # is a valid venue; events on other pools are ignored so the
+                # position's TP/SL and liquidity are never poisoned by them.
+                active_pool = pos["pool"] if pos is not None else (
+                    armed[1]["pool"] if armed is not None else None
+                )
+                if active_pool:
+                    pool_id = d["poolId"][i]
+                    if pool_id != active_pool:
+                        continue
                 price = d["price"][i]
                 liq = (d["quoteInPool"][i] or 0.0) * 2.0 * sol_usd_at(ts_s)
                 if price:
@@ -300,30 +363,21 @@ def main() -> None:
                     last_liq[mint] = liq
                 last_trade_ts[mint] = ts_s
 
-                # --- entry: armed candidate gets filled by its next buy ---
+                # --- entry: armed candidate filled by its next buy ---
                 if pos is None and armed is not None:
-                    if mint == armed[1].mint and ts_s >= armed[0]:
+                    if mint == armed[1]["mint"] and ts_s >= armed[0]:
                         fill_liq = last_liq.get(mint, 0.0)
                         if fill_liq < min_liq:
-                            stats["thin_pool"] += 1  # quote gate would reject
+                            stats["thin_pool"] += 1
                             try_arm(ts_s)
                             continue
-                        mult = price / max(armed[1].raw.get("price") or 0.0, 1e-30)
-                        if args.min_mult and mult < args.min_mult:
-                            stats["low_mult"] += 1  # weak momentum at fill
-                            try_arm(ts_s)
-                            continue
-                        if max_mult and mult > max_mult:
-                            stats["high_mult"] += 1  # too late / topped out
-                            try_arm(ts_s)
-                            continue
-                        open_position(armed[1], armed[2], price, fill_liq, ts_s)
+                        open_position(armed[1], price, fill_liq, ts_s)
                         stats["entries"] += 1
                         if args.verbose:
                             print(f"  ENTER {pos['symbol']} @ ${price*sol_usd_at(ts_s):.8f} "
-                                  f"(score {pos['score']:.0f}, liq ${fill_liq:.0f})", flush=True)
+                                  f"(score {pos['score']:.0f}, gain {pos['gain']:.2f}, "
+                                  f"liq ${fill_liq:.0f})", flush=True)
                     elif ts_s > armed[0] + 10.0:
-                        # armed but no fill within 10s — dead token, move on
                         stats["no_fill"] += 1
                         try_arm(ts_s)
 
@@ -343,7 +397,7 @@ def main() -> None:
                     elif lq < DEAD_POOL_LIQUIDITY_USD:
                         close_position("dead_pool", p, lq, ts_s)
 
-                # --- time-based exits + entry gating (checked every event) ---
+                # --- time-based exits + entry gating ---
                 if pos is not None:
                     p = pos
                     age = ts_s - p["entered_at"]
@@ -353,16 +407,18 @@ def main() -> None:
                     elif quiet >= settings.stale_exit_sec and age >= settings.stale_exit_grace_sec:
                         close_position("no_trades", p["last_price"], p["last_liq"], ts_s)
                 if pos is None and armed is None:
+                    daily_limit = (args.daily_loss_limit if args.daily_loss_limit is not None
+                                   else settings.daily_loss_limit)
                     if daily_limit > 0 and daily_pnl <= -abs(daily_limit):
                         # daily kill: stop ENTERING until next UTC midnight
                         stats["daily_halt"] += 1
                         daily_halted_until = (daily_key + 1) * 86400.0
-                        daily_pnl = 0.0  # halt persists via the timer
+                        daily_pnl = 0.0  # reset so the halt persists via the timer
                         consec_losses = 0
                     if ts_s < daily_halted_until:
                         continue
                     if ts_s < paused_until:
-                        continue  # loss pause — skip entries
+                        continue
                     try_arm(ts_s)
                 if args.max_trades and stats["entries"] >= args.max_trades:
                     halted = True
@@ -371,22 +427,25 @@ def main() -> None:
                     break
             if halted:
                 break
-            if args.verbose and batch_i % 10 == 0:
-                print(f"  ... {batch_i} batches, {stats['entries']} entries, "
+            if args.verbose and ts_s % 3600 < 1:
+                print(f"  ... {len(files)}h done: {stats['entries']} entries, "
                       f"{stats['wins']}W/{stats['losses']}L ({(time.time()-t0):.0f}s)", flush=True)
         if halted:
             break
+
+    stats["cand_after_window"] = max(0, len(candidates) - cand_i)
 
     # ---- report ----
     wins = stats["wins"]; losses = stats["losses"]; entries = stats["entries"]
     pnl = sum(t["pnl"] for t in trades)
     res = {
-        "data": args.data, "hours": len(files), "rows": total_rows,
-        "sol_usd": sol_usd, "entry_latency_s": args.entry_latency_s,
+        "data": args.data, "signals": args.signals, "mode": args.mode,
+        "hours": len(files), "rows": total_rows, "sol_usd": sol_usd,
+        "entry_latency_s": args.entry_latency_s,
         "funnel": {k: stats[k] for k in
-                   ("launches", "rug", "filter", "score_skip", "dev_veto", "qualified",
-                    "entries", "no_fill", "thin_pool", "low_mult", "high_mult",
-                    "aged_out", "parse_error", "daily_halt")},
+                   ("candidates", "entries", "no_fill", "thin_pool", "aged_out",
+                    "daily_halt", "cand_after_window")},
+        "skipped": dict(skipped),
         "exit_reasons": dict(exit_reasons),
         "trades": len(trades), "wins": wins, "losses": losses,
         "winrate": round(wins / entries * 100, 1) if entries else 0.0,
@@ -398,10 +457,11 @@ def main() -> None:
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(res, f, indent=2)
     with open(str(Path(args.out).with_suffix(".csv")), "w", encoding="utf-8") as f:
-        f.write("ts,symbol,score,entry_usd,entry_liq,entry_mult,exit_reason,exit_usd,pnl,amount,held_s\n")
+        f.write("ts,symbol,score,gain,entry_usd,entry_liq,exit_reason,exit_usd,pnl,amount,held_s\n")
         for t in trades:
-            f.write(f"{t['ts']},{t['symbol']},{t['score']},{t['entry_usd']},{t['entry_liq']},{t['entry_mult']},{t['exit_reason']},"
-                    f"{t['exit_usd']},{t['pnl']},{t['amount']},{t['held_s']}\n")
+            f.write(f"{t['ts']},{t['symbol']},{t['score']},{t['gain']},{t['entry_usd']},"
+                    f"{t['entry_liq']},{t['exit_reason']},{t['exit_usd']},{t['pnl']},"
+                    f"{t['amount']},{t['held_s']}\n")
     print(json.dumps(res, indent=2))
 
 

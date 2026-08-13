@@ -65,6 +65,7 @@ class TelegramNotifier:
         stats=None,
         on_stop: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> None:
+        """Create the notifier; disabled until a token + chat id are set."""
         token = (bot_token or "").strip()
         self._chat_id = str(chat_id or "").strip()
         self._enabled = bool(token and self._chat_id)
@@ -76,6 +77,7 @@ class TelegramNotifier:
 
     @property
     def enabled(self) -> bool:
+        """True when a token + chat id are configured."""
         return self._enabled
 
     # ------------------------------------------------------------------- send
@@ -131,10 +133,12 @@ class TelegramNotifier:
 
     @staticmethod
     def _sign(value: float) -> str:
+        """'+' for non-negative numbers (led sign formatting)."""
         return "+" if value >= 0 else ""
 
     @staticmethod
     def _now() -> str:
+        """UTC now as a human-readable timestamp."""
         return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     # ------------------------------------------------------------- lifecycle
@@ -279,10 +283,12 @@ class TelegramNotifier:
 
     # ------------------------------------------------------------- commands
     def _authorized(self, update: Update) -> bool:
+        """True when the message comes from the configured chat id."""
         chat = update.effective_chat
         return chat is not None and str(chat.id) == self._chat_id
 
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/start: open the trade gate (resume trading)."""
         if not self._authorized(update):
             log.warning("Ignoring /start from unauthorized chat")
             return
@@ -292,6 +298,7 @@ class TelegramNotifier:
         await self._send(f"✅ **Bot started** — trading resumed.\n{summary}")
 
     async def _cmd_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/stop: close the gate and request a graceful shutdown."""
         if not self._authorized(update):
             log.warning("Ignoring /stop from unauthorized chat")
             return
@@ -306,6 +313,7 @@ class TelegramNotifier:
             await self._on_stop()
 
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/status: send the current stats card."""
         if not self._authorized(update):
             log.warning("Ignoring /status from unauthorized chat")
             return
@@ -313,6 +321,7 @@ class TelegramNotifier:
         await self._send(summary)
 
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/help: list the available commands."""
         if not self._authorized(update):
             return
         await self._send(
@@ -354,6 +363,7 @@ class TelegramNotifier:
         log.error("Telegram command bot unavailable — trading continues without it")
 
     async def stop_polling(self) -> None:
+        """Stop the PTB updater + application if running."""
         if self._application is not None:
             await self._application.updater.stop()
             await self._application.stop()
@@ -361,6 +371,7 @@ class TelegramNotifier:
             self._application = None
 
     async def close(self) -> None:
+        """Stop polling and shut down the underlying bot."""
         await self.stop_polling()
         if self._bot is not None and getattr(self._bot, "_initialized", False):
             try:

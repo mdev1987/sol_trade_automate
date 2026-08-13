@@ -15,6 +15,7 @@ class TradeGate:
     """Asyncio-based start/stop switch with a shutdown latch."""
 
     def __init__(self, auto_start: bool = True) -> None:
+        """Create the gate; open it immediately when auto_start is True."""
         self._event = asyncio.Event()
         self._shutdown = False
         if auto_start:
@@ -34,9 +35,11 @@ class TradeGate:
 
     @property
     def shutdown(self) -> bool:
+        """True once request_shutdown() has latched the shutdown flag."""
         return self._shutdown
 
     def is_started(self) -> bool:
+        """True when the gate is open (trading allowed)."""
         return self._event.is_set()
 
     async def wait(self) -> None:

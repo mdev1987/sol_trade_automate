@@ -31,6 +31,7 @@ from dev_rep import DevReputationClient
 from data_stream import LaunchFeedRouter
 from live_feed import LivePriceFeed
 from monitoring import setup_logging
+from signal_scanner import signal_scan_loop
 from singleton import SingleInstanceLock
 from stats import TradeStats
 from telegram_bot import build_telegram_bot
@@ -98,6 +99,7 @@ async def _shutdown_tail(elapsed, live_feed, router, dev_rep, notifier, stats) -
 
 
 async def main() -> None:
+    """Run the full system: scanner + trade loop + telegram, until shutdown."""
     settings.validate()
 
     queue: asyncio.Queue[Candidate] = asyncio.Queue()
@@ -107,11 +109,13 @@ async def main() -> None:
     stop = asyncio.Event()
 
     def _shutdown(*_) -> None:  # noqa: ANN002 — SIGINT/SIGTERM handler
+        """Signal handler: latch the stop event to begin graceful shutdown."""
         if not stop.is_set():  # signals can arrive twice (timeout/uv forwarding)
             log.info("Shutdown signal received — closing the gate")
             stop.set()
 
     async def _telegram_stop() -> None:
+        """Telegram /stop callback — same graceful path as OS signals."""
         # called by /stop after the gate closes: same graceful path as signals
         stop.set()
 
@@ -143,6 +147,7 @@ async def main() -> None:
         log.exception("Telegram startup failed — continuing without command bot")
 
     def _log_task_error(task: asyncio.Task) -> None:
+        """Log the exception of a dying background task."""
         if not task.cancelled() and task.exception() is not None:
             log.error("Task %s died: %s", task.get_name(), task.exception())
 
@@ -154,7 +159,14 @@ async def main() -> None:
     live_feed = LivePriceFeed(trades=router.trades())
     await live_feed.start()
 
-    scanner_task = asyncio.create_task(scan_loop(queue, gate, router), name="scanner")
+    scanner_task = None
+    signal_task = None
+    if settings.strategy_mode == "signal":
+        signal_task = asyncio.create_task(signal_scan_loop(queue, gate), name="signal_scanner")
+        log.info("STRATEGY_MODE=signal — debot smart-money scanner (all DEXs)")
+    else:
+        scanner_task = asyncio.create_task(scan_loop(queue, gate, router), name="scanner")
+        log.info("STRATEGY_MODE=launch — pump.fun launch sniper")
     dev_rep = None
     if settings.dev_rep_enabled and settings.helius_api_key:
         dev_rep = DevReputationClient(settings.helius_api_key)
@@ -163,11 +175,17 @@ async def main() -> None:
         trade_loop(queue, gate, stats, notifier, live_feed, dev_rep=dev_rep), name="bot"
     )
     heartbeat_task = asyncio.create_task(heartbeat_loop(notifier, stats, t0), name="heartbeat")
-    for t in (scanner_task, bot_task, heartbeat_task):
+    tasks = [bot_task, heartbeat_task]
+    if scanner_task is not None:
+        tasks.append(scanner_task)
+    if signal_task is not None:
+        tasks.append(signal_task)
+    for t in tasks:
         t.add_done_callback(_log_task_error)
 
     await notifier.send_startup(
-        f"AUTO_START=`{settings.auto_start}` · DRY_RUN=`{settings.dry_run}` "
+        f"STRATEGY=`{settings.strategy_mode}` AUTO_START=`{settings.auto_start}` "
+        f"· DRY_RUN=`{settings.dry_run}` "
         f"· play `${settings.starting_amount:g}` USDC · TP `{settings.take_profit:g}x` "
         f"SL `{settings.stop_loss:g}x` · daily cap `-${settings.daily_loss_limit:g}`"
     )
@@ -180,9 +198,9 @@ async def main() -> None:
         await asyncio.wait_for(bot_task, timeout=GRACEFUL_TRADE_TIMEOUT_S)
     except asyncio.TimeoutError:
         log.warning("In-flight trade exceeded %ds — cancelling", GRACEFUL_TRADE_TIMEOUT_S)
-    for task in (scanner_task, bot_task, heartbeat_task):
+    for task in tasks:
         task.cancel()
-    await asyncio.gather(scanner_task, bot_task, heartbeat_task, return_exceptions=True)
+    await asyncio.gather(*tasks, return_exceptions=True)
     try:
         await asyncio.wait_for(
             _shutdown_tail(

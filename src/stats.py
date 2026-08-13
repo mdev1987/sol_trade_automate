@@ -14,11 +14,13 @@ from config import settings
 
 
 def _utc_day() -> str:
+    """Today's UTC date as YYYY-MM-DD (daily-loss tracking key)."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 @dataclass
 class TradeStats:
+    """Running trade statistics: balance, PnL, winrate, active position."""
     dry_run: bool
     started_at: float = field(default_factory=time.monotonic)
     balance_usd: float = 0.0
@@ -43,15 +45,18 @@ class TradeStats:
 
     # ------------------------------------------------------------------ state
     def __post_init__(self) -> None:
+        """Seed the bankroll from settings when not explicitly given."""
         if not self.balance_usd:
             self.balance_usd = settings.starting_balance
 
     @property
     def winrate(self) -> float:
+        """Wins / total trades (0 when no trades yet)."""
         return (self.wins / self.trades) if self.trades else 0.0
 
     @property
     def in_trade(self) -> bool:
+        """True while a position is open."""
         return bool(self.active_position)
 
     def record_buy(
@@ -109,6 +114,7 @@ class TradeStats:
         self.active_position = {}
 
     def record_buy_failure(self, symbol: str, error: str) -> None:
+        """Count a failed buy attempt and record the error."""
         self.buy_failures += 1
         self.last_trade = {"symbol": symbol, "won": False, "error": error}
 
@@ -123,6 +129,7 @@ class TradeStats:
         self.last_trade = {"symbol": symbol, "won": False, "error": "thin_liquidity"}
 
     def record_sell_failure(self, symbol: str, error: str) -> None:
+        """Count a failed sell attempt and record the error."""
         self.sell_failures += 1
         self.last_trade = {"symbol": symbol, "won": False, "error": error}
 
@@ -140,9 +147,11 @@ class TradeStats:
 
     # ---------------------------------------------------------------- helpers
     def _fmt_usd(self, v: float) -> str:
+        """Format a USD value as a markdown code string."""
         return f"${v:,.2f}"
 
     def _uptime(self) -> str:
+        """Format elapsed uptime as HH:MM:SS."""
         s = int(time.monotonic() - self.started_at)
         h, rem = divmod(s, 3600)
         m, sec = divmod(rem, 60)

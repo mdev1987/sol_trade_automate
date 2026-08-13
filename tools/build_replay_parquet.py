@@ -18,7 +18,6 @@ rug_detection, scoring_algorithm, scanner_filter).
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import time
@@ -39,6 +38,8 @@ SCHEMA = pa.schema(
         ("signature", pa.string()),
         ("mint", pa.string()),
         ("txSigner", pa.string()),
+        ("poolId", pa.string()),
+        ("pool", pa.string()),
         ("price", pa.float64()),
         ("tokenAmount", pa.float64()),
         ("quoteAmount", pa.float64()),
@@ -74,6 +75,7 @@ def _num(v):
 
 
 def _txt(v):
+    """str() that returns None for None (schema-safe)."""
     return str(v) if v is not None else None
 
 
@@ -85,6 +87,8 @@ def _row(ev: dict) -> list:
         ev.get("signature"),
         ev.get("mint"),
         ev.get("txSigner"),
+        _txt(ev.get("poolId")),
+        _txt(ev.get("pool")),
         _num(ev.get("price")),
         _num(ev.get("tokenAmount")),
         _num(ev.get("quoteAmount")),
@@ -172,6 +176,7 @@ def build_hour(src_path: str, out_path: str, batch: int = 500_000) -> dict:
 
 
 def _write_batch(writer: pq.ParquetWriter, cols: dict) -> None:
+    """Flush the accumulated row columns as one parquet row group."""
     table = pa.Table.from_pydict(cols, schema=SCHEMA)
     writer.write_table(table)
     for f in FIELDS:
@@ -179,6 +184,7 @@ def _write_batch(writer: pq.ParquetWriter, cols: dict) -> None:
 
 
 def main() -> None:
+    """Build one parquet per hourly archive in --src into --out."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", required=True, help="folder with HH.jsonl.zst files")
     ap.add_argument("--out", required=True, help="output folder (one parquet per hour)")

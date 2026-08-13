@@ -77,7 +77,6 @@ pair_json = {
     "pairCreatedAt": 1700000000000,
     "boosts": {"active": 0},
 }
-import time
 
 pair = Pair.from_json(pair_json)
 assert pair.txns_m5 == 28 and pair.buy_sell_ratio == 2.5
@@ -168,30 +167,40 @@ print("[OK] daily loss limit (10.0) + UTC reset")
 # 9) dead-token exit (no_trades) — real PriceMonitor with fakes
 import asyncio
 import price_monitor as pm_mod
-from jupiter_swap import JupiterSwap
 
 class FakeLiveFeedDead:
+    """Live feed that never sees trades for the mint (dead-token case)."""
     def __init__(self, last_age, feed_age=None):
+        """Set the last-trade age and feed age for the stale check."""
         self._last = last_age
         self._fa = feed_age
     async def price_usd(self, mint, max_age_s=10.0):
+        """No price available."""
         return None
     def last_trade_age(self, mint):
+        """The configured last-trade age."""
         return self._last
     def feed_age(self):
+        """The configured stream age."""
         return self._fa
 
 class FakeDSEmpty:
+    """DexScreener stub returning no pairs."""
     async def token_pairs(self, mint):
+        """No indexed pairs."""
         return []
     def pick_pair(self, pairs):
+        """First pair or None."""
         return pairs[0] if pairs else None
 
 class FakeJupNoPrice:
+    """Jupiter stub that never has a price."""
     async def price_usd(self, mint):
+        """No price available."""
         return None
 
 async def _stale_case(last_age, feed_age, grace=0.0):
+    """A monitor over a dead feed must emit a no_trades exit signal."""
     old_grace = settings.stale_exit_grace_sec
     settings.stale_exit_grace_sec = grace
     try:
@@ -214,22 +223,31 @@ print("[OK] dead-token exit (no_trades: stale->exit, recent->hold, reconnect->ho
 
 # 10) monitor network resilience — a failing DexScreener/Jupiter must NOT raise
 class FakeDSExplodes:
+    """DexScreener stub that always raises (resilience test)."""
     async def token_pairs(self, mint):
+        """Always raise a connection error."""
         raise ConnectionError("DNS blip")
 
 class FakeJupExplodes:
+    """Jupiter stub that always raises (resilience test)."""
     async def price_usd(self, mint):
+        """Always raise a connection error."""
         raise ConnectionError("DNS blip")
 
 class FakeLiveQuiet:
+    """Live feed that is quiet but recently traded (not stale)."""
     async def price_usd(self, mint, max_age_s=10.0):
+        """No fresh price."""
         return None
     def last_trade_age(self, mint):
+        """Recently traded -> not stale."""
         return 5.0  # recently traded -> not stale
     def feed_age(self):
+        """An old stream age."""
         return 300.0
 
 async def _resilience_case():
+    """A monitor over exploding sources must hold, not raise."""
     mon = pm_mod.PriceMonitor(FakeDSExplodes(), FakeJupExplodes(),
                               entry_price_usd=1e-6, mint="BlipMint",
                               live_feed=FakeLiveQuiet())
@@ -246,6 +264,7 @@ import httpx as _httpx
 from dev_rep import DevReputationClient
 
 def _mk_launch(creator):
+    """A minimal TokenLaunch fixture keyed by the given creator wallet."""
     from data_stream import TokenLaunch
     return TokenLaunch(mint="DevMint", name="T", symbol="T", uri="", creator=creator,
                        signature="", initial_buy_tokens=0.0, dev_sol=None,
@@ -253,6 +272,7 @@ def _mk_launch(creator):
                        is_cashback_enabled=False, source="pumpapi")
 
 def _tx(ttype, ts, source="PUMP_FUN", mints=(), transfers=()):
+    """A synthetic Helius getSignaturesForAddress-style transaction dict."""
     tx = {"type": ttype, "timestamp": ts, "source": source,
           "accountData": [{"tokenBalanceChanges": [{"mint": m} for m in mints]}],
           "tokenTransfers": [{"mint": m, "fromUserAccount": f, "toUserAccount": t}
@@ -268,13 +288,16 @@ DUMP_TXS = [
 ]
 
 def _client_with(txs):
+    """A DevReputationClient whose HTTP layer returns the given txs."""
     def handler(request):
+        """Mock handler returning the fixed transaction list."""
         return _httpx.Response(200, json=txs)
     dr = DevReputationClient(api_key="test", timeout_s=2.0,
                              transport=_httpx.MockTransport(handler))
     return dr
 
 async def _veto_case(txs, creator):
+    """Veto verdict for a creator whose Helius history is `txs`."""
     dr = _client_with(txs)
     try:
         return await dr.veto(_mk_launch(creator))
@@ -295,6 +318,7 @@ assert blk and "dumped" in reason, (blk, reason)
 print("[OK] dev-rep: prior-dump vetoed")
 # fail-open: transport raises -> pass, no exception
 def boom(request):
+    """A mock handler that always raises (fail-open test)."""
     raise _httpx.ConnectError("DNS blip")
 dr = DevReputationClient(api_key="test", timeout_s=1.0,
                          transport=_httpx.MockTransport(boom))
@@ -305,6 +329,7 @@ print("[OK] dev-rep: network failure fails OPEN (never blocks trading)")
 # cache: second veto for same wallet does not refetch
 calls = {"n": 0}
 def counting(request):
+    """A mock handler that counts invocations (cache test)."""
     calls["n"] += 1
     return _httpx.Response(200, json=CLEAN_TXS)
 dr = DevReputationClient(api_key="test", timeout_s=2.0,
@@ -321,6 +346,7 @@ print("[OK] dev-rep: per-wallet cache (1 fetch for 2 veto calls)")
 from data_stream import PumpEventHub
 
 async def _hub_case():
+    """Dispatch routing: curve events -> trades, AMM dropped, creates separate."""
     hub = PumpEventHub()
     # pumpapi curve trade
     hub._dispatch({"action": "buy", "mint": "A", "price": 0.001,

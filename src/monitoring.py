@@ -24,6 +24,7 @@ TRADE_LOG_FILE = str(_LOG_DIR / "trade_log.csv")
 
 
 def setup_logging(level: int = logging.INFO) -> logging.Logger:
+    """Configure the 'sniper_bot' logger (console + file); idempotent."""
     logger = logging.getLogger("sniper_bot")
     if logger.handlers:  # already configured
         return logger
@@ -46,6 +47,7 @@ log = setup_logging()
 
 
 def _now_iso() -> str:
+    """UTC now as an ISO-8601 string for journal timestamps."""
     return datetime.now(timezone.utc).isoformat()
 
 

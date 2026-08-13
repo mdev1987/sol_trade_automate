@@ -3,7 +3,8 @@
 IMPORTANT: `price_monitor.PriceMonitor` is patched BEFORE `bot` is imported, so
 `bot.execute_trade` sees the fake monitor (it imports the name at module load).
 """
-import sys, pathlib
+import sys
+import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 import asyncio
@@ -23,15 +24,18 @@ import price_monitor
 
 
 class FakeMonitor:
+    """Stands in for PriceMonitor: returns a canned exit signal immediately."""
     exit_signal = "take_profit"
     take_profit_price = 0.0002
     stop_loss_price = 0.000082
     live_feed = None  # hardening v2: bot reads monitor.live_feed for logging
 
     def __init__(self, *a, **k):
+        """No-op constructor (drop-in PriceMonitor replacement)."""
         pass
 
     async def run_until_exit(self):
+        """Immediately return the canned exit signal."""
         return price_monitor.ExitSignal(True, self.exit_signal, 0.0002, 20_000.0)
 
 
@@ -42,6 +46,7 @@ from telegram_bot import TelegramNotifier
 
 
 def make_launch():
+    """A TokenLaunch fixture that passes feed filters and scoring."""
     return TokenLaunch(
         mint="TestMintPump", name="Test Coin", symbol="TST", uri="https://x",
         creator="Creator", signature="sig1", initial_buy_tokens=100_000_000,
@@ -52,6 +57,7 @@ def make_launch():
 
 
 def make_pair():
+    """A DexScreener Pair fixture with healthy liquidity/volume."""
     import time
     return Pair(
         pair_address="PairAddr", dex_id="pump", base_mint="TestMintPump",
@@ -63,39 +69,50 @@ def make_pair():
 
 # --- fake Jupiter (new JupiterSwap API: buy/sell/price_usd -> SwapResult) ---
 class FakeJupiter:
+    """Stands in for JupiterSwap with scripted buy/sell/price outcomes."""
     def __init__(self, buy_ok=True, sell_output=4_000_000):
+        """Configure buy success and the raw USDC sell proceeds."""
         self.buy_ok = buy_ok
         self.sell_output = sell_output  # raw USDC returned on sell (1e6 = $1)
 
     async def buy(self, mint, amount_usd, liquidity_usd=0.0):
+        """Scripted buy: success or a canned failure SwapResult."""
         print(f"  [fake buy] {mint} ${amount_usd} liq=${liquidity_usd}")
         if not self.buy_ok:
             return SwapResult(False, "", int(amount_usd*1e6), 0, "fake buy failure")
         return SwapResult(True, "fake-buy-sig", int(amount_usd*1e6), 100_000_000, "")
 
     async def sell(self, mint, token_amount_raw):
+        """Scripted sell returning the configured USDC proceeds."""
         print(f"  [fake sell] {mint} {token_amount_raw} raw -> ${self.sell_output/1e6:.2f}")
         return SwapResult(True, "fake-sell-sig", token_amount_raw, self.sell_output, "")
 
     async def price_usd(self, mint):
+        """A fixed USD price."""
         return 0.0001
 
     async def close(self):
+        """No-op for the fake."""
         pass
 
 
 class FakeDexScreener:
+    """Stands in for DexScreenerClient returning the fixture pair."""
     async def token_pairs(self, mint):
+        """Return the single fixture pair."""
         return [make_pair()]
 
     def pick_pair(self, pairs):
+        """Return the first pair or None."""
         return pairs[0] if pairs else None
 
     async def close(self):
+        """No-op for the fake."""
         pass
 
 
 async def main():
+    """Run the full trade-cycle wiring scenarios end to end."""
     launch, pair = make_launch(), make_pair()
     cand = Candidate(launch=launch, pair=pair, score=62.5, scanned_at="now")
 
@@ -138,7 +155,9 @@ async def main():
     # FakeJupiter.buy returns the paper-quote sentinel => simulated token amount
     import bot as bot_mod  # for PAPER_QUOTE_SENTINEL constant
     class PaperJupiter(FakeJupiter):
+        """Simulates dry-run paper quoting (verified quote, no transaction)."""
         async def buy(self, mint, amount_usd, liquidity_usd=0.0):
+            """Return the paper-quote sentinel instead of a real fill."""
             print(f"  [paper buy] {mint} ${amount_usd} liq=${liquidity_usd}")
             return SwapResult(False, "", 0, 0, bot_mod.PAPER_QUOTE_SENTINEL)
     FakeMonitor.exit_signal = "stop_loss"
@@ -154,7 +173,9 @@ async def main():
 
     # --- regression: pair with liquidity_usd=None must not crash the quote ---
     class NoLiqDex(FakeDexScreener):
+        """Returns a pair with unknown liquidity (must not crash)."""
         async def token_pairs(self, mint):
+            """Pair with liquidity_usd=None to exercise the fallback."""
             p = make_pair()
             p.liquidity_usd = None
             return [p]
@@ -180,7 +201,9 @@ async def main():
 
     # --- dev-reputation veto aborts BEFORE the buy (no position, stats) ---
     class BlockingDevRep:
+        """A dev-reputation client that always vetoes."""
         async def veto(self, launch):
+            """Return a canned veto verdict."""
             return True, "serial launcher: 5 pump.fun creates in 24h"
 
     st_veto = TradeStats(dry_run=True)
@@ -196,15 +219,21 @@ async def main():
 
     # --- liquidity floor: thin pool aborts before the buy; rich pool proceeds ---
     class FakeLiveThin:
+        """Live feed reporting pool liquidity below the entry floor."""
         async def sol_usd(self):
+            """A fixed SOL/USD rate."""
             return 150.0
         def pool_liquidity_usd(self, mint, sol_usd=150.0, max_age_s=60.0):
+            """A thin $800 pool (below the $5k floor)."""
             return 800.0  # below the $5k floor
 
     class FakeLiveRich:
+        """Live feed reporting pool liquidity above the entry floor."""
         async def sol_usd(self):
+            """A fixed SOL/USD rate."""
             return 150.0
         def pool_liquidity_usd(self, mint, sol_usd=150.0, max_age_s=60.0):
+            """A rich $12k pool (above the floor)."""
             return 12_000.0  # above the floor
 
     old_win = settings.liq_confirm_window_s

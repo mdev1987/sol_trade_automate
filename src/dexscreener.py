@@ -45,16 +45,19 @@ class Pair:
     # --- derived metrics used by filters/scoring ---
     @property
     def txns_m5(self) -> int:
+        """Total buys + sells in the last 5 minutes."""
         return self.txns_m5_buys + self.txns_m5_sells
 
     @property
     def buy_sell_ratio(self) -> float:
+        """Buy:sell ratio over m5 txns (inf when only buys, 0 when none)."""
         if self.txns_m5_sells <= 0:
             return float("inf") if self.txns_m5_buys > 0 else 0.0
         return self.txns_m5_buys / self.txns_m5_sells
 
     @classmethod
     def from_json(cls, p: dict) -> "Pair":
+        """Build a Pair from a DexScreener pair JSON object."""
         base = p.get("baseToken") or {}
         quote = p.get("quoteToken") or {}
         txns = (p.get("txns") or {}).get("m5") or {}
@@ -80,6 +83,7 @@ class Pair:
 
 
 def _to_float(v) -> Optional[float]:
+    """Coerce a value to float, returning None for junk/empty."""
     if v in (None, "", "null"):
         return None
     try:
@@ -92,12 +96,14 @@ class DexScreenerClient:
     """Async REST client with a simple rate-limit throttle (60/min)."""
 
     def __init__(self, base_url: str = ""):
+        """Create the client (base_url defaults to settings.dexscreener_base)."""
         self.base_url = base_url or settings.dexscreener_base
         self._client = httpx.AsyncClient(timeout=10)
         self._min_interval = 1.1  # seconds between requests
         self._last_call = 0.0
 
     async def _get(self, path: str) -> dict | list:
+        """GET a path with a rate-limit throttle; raises on HTTP errors."""
         # throttle
         now = asyncio.get_event_loop().time()
         wait = self._min_interval - (now - self._last_call)
@@ -133,4 +139,5 @@ class DexScreenerClient:
         return pairs[0]
 
     async def close(self) -> None:
+        """Close the underlying httpx client."""
         await self._client.aclose()

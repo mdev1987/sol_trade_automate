@@ -101,6 +101,7 @@ class PumpApiStream:
     """Primary feed — wss://stream.pumpapi.io/ (raw events, no filtering)."""
 
     def __init__(self, url: str = ""):
+        """Point at the PumpAPI websocket URL (settings default when empty)."""
         self.url = url or settings.pumpapi_ws_url
 
     async def events(self) -> AsyncIterator[dict]:
@@ -125,6 +126,7 @@ class PumpDevStream:
     """Fallback feed — wss://pumpdev.io/ws with subscribeNewToken + backoff."""
 
     def __init__(self, url: str = "", api_key: str = ""):
+        """Point at the PumpDev websocket URL (settings defaults when empty)."""
         self.url = url or settings.pumpdev_ws_url
         self.api_key = api_key or settings.pump_api_key
 
@@ -169,6 +171,7 @@ class PumpEventHub:
     """
 
     def __init__(self, creates_size: int = 256, trades_size: int = 8192):
+        """Create the hub with bounded create/trade subscriber queues."""
         self.primary = PumpApiStream()
         self.fallback = PumpDevStream()
         self._creates: asyncio.Queue[dict] = asyncio.Queue(creates_size)
@@ -176,11 +179,13 @@ class PumpEventHub:
         self._task: asyncio.Task | None = None
 
     async def start(self) -> None:
+        """Launch the background feed-failover task if not already running."""
         if self._task is None:
             self._task = asyncio.create_task(self._run(), name="feed-hub")
             log.info("PumpEventHub started")
 
     async def stop(self) -> None:
+        """Cancel the background feed task and wait for it to exit."""
         if self._task is not None:
             self._task.cancel()
             try:
@@ -209,6 +214,7 @@ class PumpEventHub:
         return None
 
     def _dispatch(self, ev: dict) -> None:
+        """Route one raw event to the creates or trades subscriber queue."""
         action = ev.get("action") or ev.get("txType")
         if action == "create":
             try:
@@ -228,6 +234,7 @@ class PumpEventHub:
                     pass  # price ticks are disposable; never block the feed
 
     async def _run(self) -> None:
+        """Feed-failover loop: primary PumpAPI, fall back to PumpDev, revive."""
         while True:
             # --- primary (pumpapi) -----------------------------------------
             try:
@@ -291,21 +298,27 @@ class LaunchFeedRouter:
     """
 
     def __init__(self):
+        """Create a shared PumpEventHub for scanner + live feed consumers."""
         self.hub = PumpEventHub()
 
     async def start(self) -> None:
+        """Start the underlying feed hub."""
         await self.hub.start()
 
     async def stop(self) -> None:
+        """Stop the underlying feed hub."""
         await self.hub.stop()
 
     def launches(self) -> AsyncIterator[TokenLaunch]:
+        """Token-create stream for the launch scanner."""
         return self.hub.creates()
 
     def trades(self) -> AsyncIterator[tuple[str, float]]:
+        """Buy/sell stream (mint, price_sol) for the live price feed."""
         return self.hub.trades()
 
 
 # backwards-compatible alias used by the scanner
 def create_feed() -> LaunchFeedRouter:
+    """Build a new shared LaunchFeedRouter (scanner entry point)."""
     return LaunchFeedRouter()

@@ -38,11 +38,13 @@ MIN_BURNED_LIQUIDITY_PCT = 30.0
 
 @dataclass
 class RugReport:
+    """Result of the rug checks: passed when no flags were raised."""
     passed: bool
     flags: list[str] = field(default_factory=list)
 
 
 def check_scam_name(launch: TokenLaunch) -> list[str]:
+    """Flag names/symbols containing scam keywords."""
     flags = []
     text = f"{launch.name} {launch.symbol}".lower()
     for kw in SCAM_KEYWORDS:
@@ -52,12 +54,14 @@ def check_scam_name(launch: TokenLaunch) -> list[str]:
 
 
 def check_dev_dump(launch: TokenLaunch) -> list[str]:
+    """Flag dev wallets that bought too much SOL at launch (dump risk)."""
     if launch.dev_sol is not None and launch.dev_sol > MAX_DEV_SOL:
         return [f"dev_dump:{launch.dev_sol:.2f}SOL"]
     return []
 
 
 def check_honeypot(pair: Pair | None) -> list[str]:
+    """Flag pairs with many buys but almost no sells (can't sell out)."""
     if pair is None:
         return []
     if pair.txns_m5_buys >= HONEYPOT_MIN_BUYS and pair.txns_m5_sells < HONEYPOT_MAX_SELLS:
@@ -66,6 +70,7 @@ def check_honeypot(pair: Pair | None) -> list[str]:
 
 
 def check_wash_trading(pair: Pair | None) -> list[str]:
+    """Flag pairs whose m5 volume far exceeds their liquidity (wash trading)."""
     if pair is None or not pair.liquidity_usd:
         return []
     if pair.liquidity_usd > 0 and pair.volume_m5 > WASH_TRADE_VOLUME_MULT * pair.liquidity_usd:
@@ -74,6 +79,7 @@ def check_wash_trading(pair: Pair | None) -> list[str]:
 
 
 def check_mayhem(launch: TokenLaunch) -> list[str]:
+    """Flag mayhem-mode tokens (AI agent holds 1B — can dump before us)."""
     if launch.is_mayhem_mode:
         return ["mayhem_mode"]  # AI agent gets 1B tokens — can dump before us
     return []

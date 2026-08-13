@@ -43,6 +43,7 @@ class LivePriceFeed:
     """
 
     def __init__(self, url: str | None = None, trades=None) -> None:
+        """Create the feed; consumes the shared hub trades when trades given."""
         self.url = url or settings.pumpapi_ws_url
         self._trades = trades  # async iterator of (mint, price_sol)
         self._prices: dict[str, tuple[float, float]] = {}
@@ -56,11 +57,13 @@ class LivePriceFeed:
 
     # ------------------------------------------------------------- lifecycle
     async def start(self) -> None:
+        """Start the background feed task if it isn't already running."""
         if self._task is None:
             self._task = asyncio.create_task(self._run(), name="live-feed")
             log.info("LivePriceFeed started (shared hub=%s)", self._trades is not None)
 
     async def stop(self) -> None:
+        """Cancel the feed task and close the httpx client."""
         if self._task is not None:
             self._task.cancel()
             try:
@@ -72,6 +75,7 @@ class LivePriceFeed:
 
     # ------------------------------------------------------------------ loop
     async def _run(self) -> None:
+        """Dispatch to hub-consumption or standalone-connection mode."""
         if self._trades is not None:
             await self._consume(self._trades)
         else:

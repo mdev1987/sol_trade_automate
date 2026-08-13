@@ -1,141 +1,100 @@
-# Solana Pump.fun Sniper Bot (Jupiter Compounding)
+# Solana Pump.fun Sniper Bot
 
-Automated trading bot that snipes new Pump.fun token launches in <1 second,
-validates them (rug detection + filters + scoring), buys via Jupiter, monitors
-price via DexScreener, and sells at 2x take-profit or 0.82x stop-loss, then
-compounds 60% of winnings. Controlled from Telegram (`/start`, `/stop`,
-`/status`).
+Automated trading bot that detects token launches in <1s, validates them
+(rug detection + filters + scoring), buys via Jupiter, monitors price, and
+sells at TP/SL with 60/40 compounding. Controlled from Telegram (`/start`,
+`/stop`, `/status`).
 
-Built from the course spec in `bot_plan/COMPLETE_SUMMARY.md`, the reference
-Jupiter client in `bot_plan/sample_jupiter_code.txt`, and the API docs in
-`bot_plan/docs/`.
+Two strategies, selected with `STRATEGY_MODE`:
 
-## Replay backtest (data-driven strategy validation)
+| Mode | Scanner | Source | Scope |
+|---|---|---|---|
+| `launch` (default) | `token_scanner` | PumpAPI/PumpDev create feed | pump.fun bonding curve |
+| `signal` | `signal_scanner` | debot smart-money feed | all DEXs (pump, meteora, raydium) |
 
-`tools/build_replay_parquet.py` converts the hourly PumpAPI archives
-(`bot_plan/downloads/YYYY/MM/DD/HH.jsonl.zst`, ~10GB/day) into per-hour
-parquet (`bot_plan/parquet/YYYY-MM-DD/`, ~7GB/day, gitignored) with one
-streaming pass per hour (2 workers, ~30-55s/hour, memory-safe on 16GB).
+## Strategy status
 
-`tools/backtest.py` replays the live strategy over the parquet (same
-pipeline modules, entry at latency + 2s with slippage tiers, TP/SL/dead
-pool/no-trades/max-hold exits, 60/40 compounding, loss pause, daily kill
-switch, dev-veto replay, pump.fun 1% per-swap fees). A/B knobs:
-`--no-veto --min-liq --min-score --take-profit --stop-loss --max-hold-min
---daily-loss-limit --fee-bps`.
-
-Validated battery (4 full days, 100bps fees, dev veto on; full 24h 07/21):
-- deployed config (score>=60 + $5k liq floor + MAX_ENTRY_MULT=5 + daily kill
-  switch @ -$8): **+$28.61**
-  → 07/20 −8.18 (halt) · 07/21 +17.94 · 07/22 +17.99 · 08/09 +0.86
-  (daily win-rate 22–36%)
-- the entry-mult gate is the big lever: fills already >5x the launch price
-  are "chasing a pump" and lose disproportionately — without it the same
-  battery is +$6.42 (−10.36 · −10.16 · +24.88 · +2.06); tightening the daily
-  cap 10→8 adds a further ~+$2 on the halt days with no good-day cost
-- regime-dependent: daily win-rate 22–43%; 07/21 evening hours (16–23) are
-  materially worse than the day (that's the −10.16 halt day pre-gate)
-- These findings are wired into the live bot (MIN_SCORE=60,
-  MIN_LIQUIDITY_USD=5000, LIQ_CONFIRM_WINDOW_S=10, MAX_ENTRY_MULT=5,
-  DAILY_LOSS_LIMIT=8).
+- **Launch sniper — validated.** Replay backtest over 4 full days (realtime
+  SOL/USD + modeled price-impact slippage, 100bps fees, dev veto on): profitable
+  every day, **+$16.38 total** (per-day: 07/20 +$4.42 · 07/21 +$1.46 · 07/22
+  +$10.03 · 08/09 +$0.47; daily win-rate 24–44%). Wired into the live bot
+  (`MIN_SCORE=60`, `MIN_LIQUIDITY_USD=5000`, `MAX_ENTRY_MULT=5`,
+  `DAILY_LOSS_LIMIT=8`).
+- **Signal strategy — promising, pre-deployment.** In-sample on one 28h window,
+  band 1.0–1.87× + tight TP 1.5×/SL 0.70× = **+$3.51** (44.8% win-rate, 58
+  trades) vs the default TP 2.0×/SL 0.82× which loses (−$4.93). The edge is
+  thin and split-half unstable; it needs an out-of-sample day before going live.
+  See `bot_plan/signal_replay_backtest.md`.
 
 ## Layout
 
 ```
-src/                  # application code (uv runtime, see pyproject.toml)
+src/                  # application code
   main.py             # orchestration: scanner + bot + telegram, graceful shutdown
-  token_scanner.py    # launch feed (PumpAPI primary → PumpDev fallback) → validate → score
-  bot.py              # buy → monitor → sell → compound (quote gate + /order + /execute)
+  token_scanner.py    # launch feed → validate → score → queue
+  signal_scanner.py   # debot signal feed → gate → score → queue (STRATEGY_MODE=signal)
+  bot.py              # buy → monitor → sell → compound
   telegram_bot.py     # command bot: /start /stop /status (telegramify-markdown)
-  stats.py            # balance, winrate, PnL, active position (markdown)
+  stats.py            # balance, winrate, PnL, active position
   control.py          # trade gate (start/stop)
   jupiter_swap.py     # JupiterSwap: quote gate, sign, execute, slippage escalation
   dexscreener.py      # pair liquidity / volume / price (REST, 60 req/min)
   data_stream.py      # PumpAPI + PumpDev WebSocket feeds with failover
   rug_detection.py    # scam name, dev dump, honeypot, wash trading, mayhem
-  scanner_filter.py   # course thresholds (age, liq, volume, txns, b/s, mcap)
+  scanner_filter.py   # thresholds (age, liq, volume, txns, b/s, mcap)
   scoring_algorithm.py# 80-point scoring
-  price_monitor.py    # 8s poll, TP 2x / SL 0.82x / dead pool <$25
-  risk_management.py  # loss pause (2 losses → 5 min), play floor
+  price_monitor.py    # TP / SL / dead pool / no-trades / max-hold exits
+  risk_management.py  # loss pause, play floor
   compounding.py      # 60/40 split
-  monitoring.py       # logging, journal, trade log, notifier
+  monitoring.py       # logging, journal, trade log
 tests/                # smoke + integration tests (no network)
-scripts/              # ops: ship_for_host.sh, deploy_host.sh, run_bot.sh,
-                      #      _supervise.sh (nohup supervisor), sol-bot.service
-tools/                # replay backtest: build_replay_parquet.py, backtest.py
+scripts/              # ship_for_host.sh, deploy_host.sh, run_bot.sh, watchdog.sh, service
+tools/                # backtest.py, backtest_signals.py, build_replay_parquet.py
 ```
 
-## Setup (uv)
+## Setup
 
 ```bash
-uv sync                                  # installs deps into .venv (see pyproject.toml)
-cp .env.example .env                     # or use the values from bot_plan/sample_env.txt
+uv sync                                  # installs deps into .venv
+cp .env.example .env
 ```
 
-Required to go live (`DRY_RUN=false`):
+Key env vars (all documented with comments in `.env.example`):
 
-| Var | Purpose |
-|---|---|
-| `STARTING_BALANCE` | `20` | paper wallet initial bankroll (`/status` balance start) |
-| `PRIVATE_KEY` | wallet keypair (base58) — **never your main wallet** |
-| `JUPITER_API_KEY` | free at https://developers.jup.ag/portal (FREE tier = 1 RPS) |
-| `PUMPCOINS_SOL_PRICE_URL` / `COINGECKO_SOL_PRICE_URL` | pumpcoins.net / CoinGecko | extra SOL/USD oracles in the fail-open chain (DexScreener → Jupiter → pumpcoins → CoinGecko → last-known) |
-| `BOT_TOKEN` / `CHAT_ID` | Telegram control + alerts (BotFather) |
-
-Hardening v2 (all optional, sane defaults):
-
-| Variable | Default | Meaning |
+| Var | Default | Purpose |
 |---|---|---|
-| `DAILY_LOSS_LIMIT` | `10` | halt trading until UTC midnight when daily realized PnL ≤ −limit (`0` = off) |
-| `STATUS_INTERVAL_MIN` | `15` | periodic `/status` heartbeat card (`0` = off) |
-| `MAX_HOLD_MIN` | `30` | force-exit a position held this long (stuck-position watchdog) |
-| `LIVE_FEED_EXIT` | `true` | PumpAPI buy/sell stream → sub-second TP/SL triggers (shares the scanner's single connection) |
-| `MIN_SCORE` | `60` | minimum feed score for a launch to be queued (feed-data entry path; backtest-validated) |
-| `STALE_EXIT_SEC` | `60` | dead-token exit: no live trades this long + no DexScreener pair → exit (frees the position slot) |
-| `STALE_EXIT_GRACE_SEC` | `15` | grace period after entry before the dead-token exit can fire |
-| `MAX_CANDIDATE_AGE_MIN` | `5` | drop queued candidates older than this at dequeue time |
-| `MIN_LIQUIDITY_USD` | `5000` | entry floor: skip the buy unless the on-chain pool liquidity (2×quoteInPool×SOL) proves ≥ this. Backtest-validated (removes the dead/thin-pool bleed); `0` = off |
-| `LIQ_CONFIRM_WINDOW_S` | `10` | how long the bot waits for a confirming buy to push the pool over the floor |
-| `MAX_ENTRY_MULT` | `5` | skip the buy when the token already traded at > this × the launch price (don't chase the already-pumped fill). Backtest-validated (the single biggest PnL lever in the battery); `0` = off |
-| `DEV_REP_ENABLED` | `true` | Helius dev-reputation veto (read-only, fail-open) |
-| `DEV_REP_MAX_CREATES_24H` | `3` | veto devs with ≥ N pump.fun creates in 24h (serial launchers) |
-| `DEV_REP_MIN_AGE_HOURS` | `0` | veto wallets younger than this; `0` = off (weakest signal) |
-| `DEV_REP_CACHE_TTL_MIN` | `10` | per-wallet verdict cache |
-| `DEV_REP_TIMEOUT_S` | `2.5` | lookup budget; runs parallel to the entry-price estimate |
-
-Optional: `SOLANA_RPC_URL` (Helius/Alchemy, optional reads only), `PUMPDEV_API_KEY`,
-`HELIUS_API_KEY` (defaults to the `api-key` embedded in `SOLANA_RPC_URL` when that
-URL is Helius). The dev-reputation veto queries Helius enhanced transactions for
-the launch's dev wallet and blocks serial launchers / prior-dump wallets *before*
-the buy; any lookup error fails OPEN (trading never blocked by a flaky check).
+| `STRATEGY_MODE` | `launch` | `launch` = pump.fun sniper, `signal` = debot signal scanner |
+| `STARTING_AMOUNT` | `2` | play size (USDC) |
+| `TAKE_PROFIT` / `STOP_LOSS` | `2.0` / `0.82` | exit levels (signal mode: TP 1.5 / SL 0.70 recommended) |
+| `MIN_SCORE` | `60` | minimum score to queue |
+| `MIN_LIQUIDITY_USD` | `5000` | entry floor: skip buy unless on-chain pool liquidity ≥ this |
+| `LIQ_CONFIRM_WINDOW_S` | `10` | wait for a confirming buy to push the pool over the floor |
+| `MAX_ENTRY_MULT` | `5` | skip fills already > N× the launch price (anti-chase) |
+| `DAILY_LOSS_LIMIT` | `8` | halt until UTC midnight when daily PnL ≤ −limit (`0` = off) |
+| `LIVE_FEED_EXIT` | `true` | PumpAPI buy/sell stream → sub-second TP/SL triggers |
+| `DEV_REP_ENABLED` | `true` | Helius dev-reputation veto (serial launchers, prior dumps; fail-open) |
+| `PRIVATE_KEY` | — | wallet keypair (base58) — **never your main wallet** |
+| `JUPITER_API_KEY` | — | free at https://developers.jup.ag/portal |
+| `BOT_TOKEN` / `CHAT_ID` | — | Telegram control + alerts |
 
 ## Run
 
 ```bash
 uv run python src/main.py                # scanner + bot + telegram (recommended, 24/7)
-uv run python src/token_scanner.py       # scanner only
+uv run python src/token_scanner.py       # launch scanner only
 uv run python src/bot.py                 # bot only
 ```
 
-On a host **without systemd** (small VPS/container), run it supervised with the
-built-in nohup supervisor instead of a terminal:
+On a host without systemd, use the built-in supervisor:
 
 ```bash
-bash scripts/run_bot.sh start            # nohup + auto-restart (5s) + pidfile
-bash scripts/run_bot.sh status
-bash scripts/run_bot.sh stop             # graceful; kill -9 fallback, no orphans
+bash scripts/run_bot.sh start|stop|status|restart
 ```
 
 Always run with `DRY_RUN=true` first — the quote gate still validates real
-routes against Jupiter but nothing is ever signed or executed. Review scored
-tokens, then go live with $2 USDC.
+routes against Jupiter but nothing is signed or executed.
 
 ## Telegram control
-
-Command bot (`python-telegram-bot` `Application`/`CommandHandler` — docs in
-`bot_plan/docs/telegram_bot_docs/`) plus markdown trade cards
-(`telegramify-markdown` entities, no `parse_mode`) ported from
-`bot_plan/sample_telegram_code.txt`.
 
 | Command | Action |
 |---|---|
@@ -144,43 +103,33 @@ Command bot (`python-telegram-bot` `Application`/`CommandHandler` — docs in
 | `/status` | balance, winrate, realized PnL, active position, quote-gate stats |
 | `/help` | command list |
 
-Cards posted automatically: 🚀 startup, 🟢 buy, 💰/🔻 sell (PnL, ROI, hold
-time, balance), 🏁 stopped summary. Only the configured `CHAT_ID` may send
-commands. `AUTO_START=true` (default) begins trading on launch; set
-`AUTO_START=false` to require `/start`.
+Cards posted automatically: 🚀 startup, 🟢 buy, 💰/🔻 sell, 🏁 stopped summary.
+Only the configured `CHAT_ID` may send commands.
 
-## Supervision (24/7)
+## Backtesting
 
-Two supported ways to keep the bot alive; **`scripts/run_bot.sh` is the default**
-(everywhere, including hosts without systemd):
+The backtests replay the exact live pipeline (same modules, entry latency +2s,
+TP/SL/dead/no-trades/max-hold exits, 60/40 compounding, loss pause, daily kill
+switch, dev-veto, 100bps fees) over PumpAPI historical archives:
 
 ```bash
-bash scripts/run_bot.sh {start|stop|status|restart}
+# convert downloaded archives (last 24h) to parquet
+uv run python tools/build_replay_parquet.py \
+    --src bot_plan/downloads/2026/08/13 --out bot_plan/parquet/2026-08-13
+
+# launch strategy
+uv run python tools/backtest.py --data bot_plan/parquet/2026-08-13 \
+    --sol-usd-file bot_plan/sol_usd_hourly.json --slippage-model impact
+
+# signal strategy (needs bot_plan/signal_raw/channel_list.json from a live crawl)
+uv run python tools/backtest_signals.py --data bot_plan/parquet/2026-08-13 \
+    --signals bot_plan/signal_raw/channel_list.json \
+    --band-min 1.0 --band-max 1.87 --take-profit 1.5 --stop-loss 0.70
 ```
 
-- `start` = `nohup` a supervisor loop: runs `src/main.py`, auto-restarts 5s
-  after any exit (crash or OOM), pidfile `.sniper-bot-super.pid`;
-  logs → `bot_logs/supervisor.log`
-- `stop` = kill the supervisor first (no re-spawn race), graceful SIGTERM,
-  ≤25s grace, then kill -9 stragglers — **never leaves an orphan bot**
-- `@reboot` auto-start + crash/stall watchdog (no systemd available):
-
-```cron
-*/5 * * * * /opt/sol-bot/scripts/watchdog.sh /opt/sol-bot
-@reboot /opt/sol-bot/scripts/watchdog.sh /opt/sol-bot
-```
-
-  `watchdog.sh` re-starts the supervisor when it is dead (e.g. after a host
-  reboot) and restarts the bot when its log goes silent for
-  `WATCHDOG_STALE_MIN` (default 10m) minutes even though the supervisor is
-  alive (wedged I/O). Every restart posts a ⚠️ alert to the configured
-  Telegram chat (creds read from `.env`), so an outage is never silent.
-
-systemd is optional: `scripts/sol-bot.service` (user unit — `systemctl --user
-install`) or `/etc/systemd/system/sol-bot.service` (root, `Restart=always`,
-starts on boot, stderr/tracebacks in `journalctl -u sol-bot -e`).
-`scripts/deploy_host.sh` picks one automatically (systemd+root → service,
-otherwise → `run_bot.sh` + prints the `watchdog.sh` crontab line).
+The debot signal API is live-only (~24h retention): crawl signals now, then
+download the matching replay archives (`replay.pumpapi.io/YYYY/MM/DD/HH.jsonl.zst`).
+Replay archives are multi-GB — they stay out of git (`bot_plan/` is ignored).
 
 ## Logs
 
@@ -189,9 +138,8 @@ otherwise → `run_bot.sh` + prints the `watchdog.sh` crontab line).
 - `bot_logs/trade_log.csv` — trade history
 - `bot_logs/supervisor.log` — only when run via `run_bot.sh`
 
-Operational notes: SIGHUP is handled like SIGINT/SIGTERM (graceful stop — no
-silent death when a terminal closes); the shutdown tail itself is bounded
-(websocket close timeout 2s + 20s watchdog → force-exit, supervisor restarts);
+Operational notes: SIGHUP handled like SIGINT/SIGTERM (graceful stop); the
+shutdown tail is bounded (websocket close + 20s watchdog → force-exit); a
 single-instance flock prevents two bots on the same host; every external call
 (Telegram/Jupiter/DexScreener/Helius/SOL oracles) is time-boxed and fails open.
 
@@ -202,49 +150,22 @@ uv run python tests/_smoke_test.py        # pure-logic checks, no network
 uv run python tests/_integration_test.py  # end-to-end trade cycle, mocked network
 ```
 
-## Deploy on a small host (3GB disk / 4GB RAM / 2GHz)
+## Deploy on a small host
 
-Measured footprint: **~47MB venv + ~270KB code** — the bot is asyncio/I-O bound,
-runs at ~50-60MB RSS, and needs **no inbound ports** (Telegram polling, all
-feeds/APIs outbound). Backtest data (58GB of parquet) stays on the dev machine —
-**do not run backtests on the host**.
+Footprint: ~47MB venv + ~270KB code, ~50-60MB RSS, no inbound ports. Backtest
+data stays on the dev machine — **do not run backtests on the host**.
 
 ```bash
 # 1) local: build the ship tarball (excludes .git/.venv/bot_plan/.env)
 scripts/ship_for_host.sh /tmp/sol-bot-ship.tgz
-scp /tmp/sol-bot-ship.tgz user@HOST:/tmp/
-scp .env user@HOST:/tmp/.env          # secrets travel separately
+scp /tmp/sol-bot-ship.tgz user@HOST:/tmp/ && scp .env user@HOST:/tmp/.env
 
 # 2) host:
 sudo mkdir -p /opt/sol-bot && sudo tar xzf /tmp/sol-bot-ship.tgz -C /opt/sol-bot
 sudo cp /tmp/.env /opt/sol-bot/.env && sudo chmod 600 /opt/sol-bot/.env
-
-# 3) host: provision venv + supervisor
 sudo bash /opt/sol-bot/scripts/deploy_host.sh /opt/sol-bot
-#   - with systemd: installs sol-bot.service (auto-restart, starts on boot)
-#   - without systemd (containers/small hosts): falls back to a simple
-#     supervisor  →  bash scripts/run_bot.sh {start|stop|status|restart}
-#     (nohup + auto-restart every 5s; add "@reboot ... run_bot.sh start"
-#     to crontab if you want it back after host reboot)
-
-**Alternative — git clone instead of tarball** (no /opt/sol-bot needed):
-
-```bash
-git clone git@github.com:mdev1987/sol_trade_automate.git
-cd sol_trade_automate
-cp .env.example .env        # or scp your dev .env:  scp .env user@HOST:~/sol_trade_automate/.env
-bash scripts/deploy_host.sh # deploys right here in the clone (no arg = repo root)
 ```
 
-# 4) check
-systemctl status sol-bot && tail -f /opt/sol-bot/bot_logs/bot.log
-```
-
-Notes: keep `DRY_RUN=true` until you're ready for real orders; logs land in
-`bot_logs/` (absolute paths) and stderr/tracebacks in
-`journalctl -u sol-bot -e` (systemd) or `bot_logs/supervisor.log`
-(`run_bot.sh`). The unit sets `TZ=Asia/Tehran` to match local timestamps —
-edit `Environment=` if you prefer UTC. First deployment is paper-only; flip
-`DRY_RUN=false` + `systemctl --user restart sol-bot` (or `run_bot.sh restart`)
-only when you are ready for real orders — and then run the bot on **one**
-machine (the single-instance lock is per-host, two hosts would double-buy).
+Alternative: `git clone` into the repo dir and run `bash scripts/deploy_host.sh`
+there (no /opt/sol-bot needed). Keep `DRY_RUN=true` until ready for real orders,
+and run the bot on **one** machine (the single-instance lock is per-host).

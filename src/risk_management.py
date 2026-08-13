@@ -17,12 +17,14 @@ log = logging.getLogger("sniper_bot.risk")
 
 @dataclass
 class RiskManager:
+    """Tracks the play amount, consecutive losses and the loss-pause cooldown."""
     play_amount: float = field(default_factory=lambda: settings.starting_amount)
     consecutive_losses: int = 0
     paused_until: float = 0.0  # monotonic time when pause ends
 
     @property
     def paused(self) -> bool:
+        """True while the loss-pause cooldown is still active."""
         return time.monotonic() < self.paused_until
 
     async def wait_if_paused(self) -> None:

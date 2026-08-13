@@ -12,7 +12,10 @@ log = logging.getLogger("sniper_bot.singleton")
 
 
 class SingleInstanceLock:
+    """Flock-based single-instance lock on a lockfile path."""
+
     def __init__(self, path: str = ".sniper-bot.lock") -> None:
+        """Point the lock at a lockfile path."""
         self.path = path
         self._fd: int | None = None
 
@@ -33,6 +36,7 @@ class SingleInstanceLock:
             return False
 
     def release(self) -> None:
+        """Release the flock and close the lockfile descriptor."""
         if self._fd is None:
             return
         import fcntl

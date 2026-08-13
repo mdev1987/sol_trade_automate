@@ -21,6 +21,7 @@ USDC_DECIMALS = 6
 
 
 def _get_bool(name: str, default: bool) -> bool:
+    """Read a boolean env var; true for 1/true/yes/on, else the default."""
     raw = os.getenv(name)
     if raw is None:
         return default
@@ -28,6 +29,7 @@ def _get_bool(name: str, default: bool) -> bool:
 
 
 def _get_int(name: str, default: int) -> int:
+    """Read an integer env var, falling back to default on junk."""
     try:
         return int(os.getenv(name, str(default)))
     except ValueError:
@@ -35,6 +37,7 @@ def _get_int(name: str, default: int) -> int:
 
 
 def _get_float(name: str, default: float) -> float:
+    """Read a float env var, falling back to default on junk."""
     try:
         return float(os.getenv(name, str(default)))
     except ValueError:
@@ -101,6 +104,8 @@ def _parse_helius_key(url: str) -> str:
 
 @dataclass
 class Settings:
+    """All runtime configuration, read from env vars at import time."""
+
     # --- trade parameters ---
     starting_amount: float = field(default_factory=lambda: _get_float("STARTING_AMOUNT", 2.0))
     # paper wallet initial bankroll (what /status balance starts at); position
@@ -234,6 +239,53 @@ class Settings:
         default_factory=lambda: os.getenv("CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID", "")
     )
 
+    # --- strategy mode: which candidate source drives trading ---
+    # launch = pump.fun launch sniper (create events on the bonding curve,
+    #          rug+scoring+dev-veto funnel) — the default, replay-validated.
+    # signal = debot smart-money signal scanner (all DEXs: pump_swap, pump,
+    #          meteora, raydium, ...) — experimental, needs replay validation.
+    strategy_mode: str = field(
+        default_factory=lambda: os.getenv("STRATEGY_MODE", "launch").strip().lower()
+    )
+
+    # --- debot smart-money signal scanner (used when strategy_mode == "signal") ---
+    # Polls debot /channel/list for signal events and feeds the SAME queue the
+    # launch scanner uses. Pattern + defaults calibrated on 469 crawled events
+    # (bot_plan/signal_pattern_report.md): the only robust winner feature is a
+    # *moderate pre-signal pump* (max_price_gain 0.72-1.87x -> ~30% win vs
+    # 8-10% for flat/already-2x), so the gain band is the anti-chase gate.
+    signal_poll_sec: float = field(default_factory=lambda: _get_float("SIGNAL_POLL_SEC", 20.0))
+    signal_max_age_sec: float = field(
+        default_factory=lambda: _get_float("SIGNAL_MAX_AGE_SEC", 300.0)
+    )
+    signal_min_gain: float = field(default_factory=lambda: _get_float("SIGNAL_MIN_GAIN", 0.72))
+    signal_max_gain: float = field(default_factory=lambda: _get_float("SIGNAL_MAX_GAIN", 1.87))
+    signal_min_wallets: int = field(default_factory=lambda: _get_int("SIGNAL_MIN_WALLETS", 1))
+    signal_min_liquidity_usd: float = field(
+        default_factory=lambda: _get_float("SIGNAL_MIN_LIQUIDITY_USD", 5000.0)
+    )
+    signal_max_liquidity_usd: float = field(
+        default_factory=lambda: _get_float("SIGNAL_MAX_LIQUIDITY_USD", 500_000.0)
+    )
+    signal_min_holders: int = field(default_factory=lambda: _get_int("SIGNAL_MIN_HOLDERS", 30))
+    signal_max_top10: float = field(default_factory=lambda: _get_float("SIGNAL_MAX_TOP10", 0.35))
+    signal_max_mcap_usd: float = field(
+        default_factory=lambda: _get_float("SIGNAL_MAX_MCAP_USD", 500_000.0)
+    )
+    signal_min_vol24_usd: float = field(
+        default_factory=lambda: _get_float("SIGNAL_MIN_VOL24_USD", 1000.0)
+    )
+    signal_min_signals: int = field(default_factory=lambda: _get_int("SIGNAL_MIN_SIGNALS", 1))
+    # comma-separated token_level tiers to reject (research: silver/gold showed
+    # 0% win rate but tiny n=7/3 — default rejects nothing)
+    signal_reject_tiers: tuple = field(
+        default_factory=lambda: tuple(
+            t.strip().lower()
+            for t in os.getenv("SIGNAL_REJECT_TIERS", "").split(",")
+            if t.strip()
+        )
+    )
+
     # --- jupiter price fallback ---
     jupiter_price_base: str = field(
         default_factory=lambda: (
@@ -262,6 +314,10 @@ class Settings:
         """Fail fast on missing secrets (only when going live)."""
         if self.dry_run:
             return
+        if self.strategy_mode not in ("launch", "signal"):
+            raise ValueError(
+                f"STRATEGY_MODE must be 'launch' or 'signal', got {self.strategy_mode!r}"
+            )
         missing = []
         if not self.private_key or self.keypair is None:
             missing.append("PRIVATE_KEY")

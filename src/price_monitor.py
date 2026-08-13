@@ -31,6 +31,7 @@ LIVE_TICK_S = 1.0  # fast loop when a fresh live price exists
 
 @dataclass
 class ExitSignal:
+    """Result of one monitor evaluation; exit=True triggers a sell."""
     exit: bool
     reason: str  # "take_profit"|"stop_loss"|"dead_pool"|"no_trades"|"max_hold"|"shutdown"|"none"
     price_usd: float | None
@@ -38,6 +39,8 @@ class ExitSignal:
 
 
 class PriceMonitor:
+    """Watch one open position and signal when to exit (TP/SL/dead/max-hold)."""
+
     def __init__(
         self,
         dexscreener: DexScreenerClient,
@@ -47,6 +50,7 @@ class PriceMonitor:
         live_feed=None,
         stop_check=None,
     ):
+        """Create a monitor for one position: TP/SL/dead/max-hold exit rules."""
         self.ds = dexscreener
         self.jupiter = jupiter
         self.entry_price_usd = entry_price_usd
@@ -137,6 +141,7 @@ class PriceMonitor:
         return age > settings.stale_exit_sec
 
     def _shutdown_pending(self) -> bool:
+        """True when the shutdown callback fires (exit the position)."""
         return bool(self.stop_check and self.stop_check())
 
     async def run_until_exit(self, on_price=None) -> ExitSignal:

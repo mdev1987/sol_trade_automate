@@ -53,6 +53,7 @@ class JupiterError(RuntimeError):
     """Raised when a swap order/execute fails and cannot be retried."""
 
     def __init__(self, message: str, status: Optional[int] = None) -> None:
+        """Create the error with an optional HTTP status code."""
         super().__init__(message)
         self.status = status
 
@@ -110,6 +111,7 @@ class JupiterSwap:
     """Async wrapper around the managed /order + /execute swap path."""
 
     def __init__(self, settings=None) -> None:
+        """Create the Jupiter client from the given settings (or the global one)."""
         s = settings or globals()["settings"]
         self._base = s.jupiter_api
         self._headers = {"accept": "application/json"}
@@ -288,6 +290,7 @@ class JupiterSwap:
             self._next_quote_ts = now + interval
 
     def _record_latency(self, ms: float) -> None:
+        """Accumulate a quote latency sample for the running stats."""
         self._lat_sum += ms
         self._lat_count += 1
         self._lat_max = max(self._lat_max, ms)

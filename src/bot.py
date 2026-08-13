@@ -118,9 +118,9 @@ async def execute_trade(
     stop_check=None,
     dev_rep: Optional[DevReputationClient] = None,
 ) -> tuple[bool, str]:
-    """stop_check: callable()->bool — monitor exits "shutdown" when True so a
-    graceful stop sells the open position instead of hard-cancelling it."""
-    """One full trade cycle. Returns (won, exit_reason)."""
+    """One full trade cycle. Returns (won, exit_reason). stop_check: callable()->bool
+    — the monitor exits "shutdown" when True so a graceful stop sells the open
+    position instead of hard-cancelling it."""
     amount = risk.play_amount
     mint = candidate.launch.mint
 
@@ -328,7 +328,7 @@ async def execute_trade(
         )
     try:
         signal = await monitor.run_until_exit()
-    except Exception as exc:  # noqa: BLE001 — never lose a position's accounting
+    except Exception:  # noqa: BLE001 — never lose a position's accounting
         log.exception("Monitor crashed for %s — emergency exit at last price",
                       candidate.launch.symbol)
         last_price = None

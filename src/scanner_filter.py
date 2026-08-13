@@ -14,6 +14,7 @@ from dexscreener import Pair
 
 @dataclass
 class Thresholds:
+    """DexScreener-pair thresholds for the (legacy) pair-based filter."""
     max_age_minutes: float = 5.0  # older = easy gains gone
     min_liquidity_usd: float = 2_000.0
     max_liquidity_usd: float = 500_000.0

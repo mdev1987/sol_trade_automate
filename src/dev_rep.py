@@ -59,6 +59,7 @@ class DevReputationClient:
         min_age_hours: Optional[float] = None,
         transport=None,  # httpx transport (tests inject MockTransport)
     ) -> None:
+        """Create the client with per-wallet cache and fail-open defaults."""
         self._key = api_key if api_key is not None else settings.helius_api_key
         self._base = (base or "https://mainnet.helius-rpc.com").rstrip("/")
         self._timeout = timeout_s if timeout_s is not None else settings.dev_rep_timeout_s
@@ -94,9 +95,11 @@ class DevReputationClient:
         return verdict
 
     async def close(self) -> None:
+        """Close the underlying httpx client."""
         await self._client.aclose()
 
     def summary(self) -> str:
+        """One-line status for status cards / logs."""
         parts = [f"dev-rep: {self.lookups} lookups / {self.vetoes} vetoes"]
         if self.last_error:
             parts.append(f"last-err: {self.last_error[:40]}")
@@ -104,6 +107,7 @@ class DevReputationClient:
 
     # ----------------------------------------------------------------- internal
     async def _check_wallet(self, wallet: str) -> tuple[bool, str]:
+        """Look up one wallet and return (blocked, reason), failing open."""
         try:
             txs = await self._fetch(wallet)
         except Exception as exc:  # noqa: BLE001 — fail-open
