@@ -221,6 +221,9 @@ async def main():
         async def sol_usd(self):
             """A fixed SOL/USD rate."""
             return 150.0
+        async def price_usd(self, mint):
+            """A fresh websocket price."""
+            return 0.0001 * 150.0
         def pool_liquidity_usd(self, mint, sol_usd=150.0, max_age_s=60.0):
             """A thin $800 pool (below the $5k floor)."""
             return 800.0  # below the $5k floor
@@ -230,6 +233,9 @@ async def main():
         async def sol_usd(self):
             """A fixed SOL/USD rate."""
             return 150.0
+        async def price_usd(self, mint):
+            """A fresh websocket price."""
+            return 0.0001 * 150.0
         def pool_liquidity_usd(self, mint, sol_usd=150.0, max_age_s=60.0):
             """A rich $12k pool (above the floor)."""
             return 12_000.0  # above the floor

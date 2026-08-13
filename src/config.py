@@ -140,9 +140,16 @@ class Settings:
     # (2 x quoteInPool x SOL) is >= MIN_LIQUIDITY_USD. Backtest-validated
     # (kills the dead/thin-pool bleed; 0 = disabled). The bot waits up to
     # LIQ_CONFIRM_WINDOW_S for a confirming buy to push the pool over the floor.
+    #
+    # LIQ_CONFIRM_WINDOW_S aligns with the replay backtest's entry_latency_s
+    # (2.0s): live fills at ~2s instead of waiting a full 10s per candidate.
+    # The old 10s window was the serial bottleneck (10s per candidate -> the
+    # 46% queue backlog + ATH-chasing fills); 2s gives 5x candidate throughput
+    # and skips pools that haven't proven $MIN_LIQUIDITY_USD by then, exactly
+    # like the backtest's first-fill-event check.
     min_liquidity_usd: float = field(default_factory=lambda: _get_float("MIN_LIQUIDITY_USD", 5000.0))
     liq_confirm_window_s: float = field(
-        default_factory=lambda: _get_float("LIQ_CONFIRM_WINDOW_S", 10.0)
+        default_factory=lambda: _get_float("LIQ_CONFIRM_WINDOW_S", 2.0)
     )
     # skip the buy when the token has already traded at more than
     # MAX_ENTRY_MULT x the launch (create) price. On pump.fun a fill far

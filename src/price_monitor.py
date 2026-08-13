@@ -173,7 +173,11 @@ class PriceMonitor:
                 await on_price(signal)
             if signal.exit:
                 return signal
-            fast = (
-                self.live_feed is not None and await self.live_feed.price_usd(self.mint) is not None
-            )
-            await asyncio.sleep(LIVE_TICK_S if fast else settings.poll_interval)
+            # Event-driven: wake on the next websocket trade tick for this mint
+            # (sub-second TP/SL reaction), with a 1s backstop so a quiet mint
+            # still gets a regular check. This replaces the old fixed 1s sleep
+            # that let prices gap 40-72% past the stop between polls.
+            if self.live_feed is not None:
+                await self.live_feed.wait_trade(self.mint, LIVE_TICK_S)
+            else:
+                await asyncio.sleep(settings.poll_interval)

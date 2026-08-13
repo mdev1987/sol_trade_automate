@@ -49,6 +49,9 @@ class LivePriceFeed:
         self._prices: dict[str, tuple[float, float]] = {}
         # mint -> (quoteInPool SOL, monotonic ts) — on-chain pool liquidity
         self._liqs: dict[str, tuple[float, float]] = {}
+        # per-mint asyncio.Event fired on every trade update — lets the exit
+        # monitor wake on sub-second websocket ticks instead of polling 1s
+        self._events: dict[str, asyncio.Event] = {}
         self._sol_usd: float | None = None
         self._sol_usd_ts = 0.0
         self._task: asyncio.Task | None = None
@@ -92,6 +95,7 @@ class LivePriceFeed:
                     self._prices[mint] = (float(price), now)
                     if liq is not None:
                         self._liqs[mint] = (float(liq), now)
+                    self._wake(mint)
                     self._prune()
                 delay = RECONNECT_BASE_S
             except asyncio.CancelledError:
@@ -126,6 +130,7 @@ class LivePriceFeed:
                             self._prices[mint] = (float(price), now)
                             if isinstance(liq, (int, float)) and liq > 0:
                                 self._liqs[mint] = (float(liq), now)
+                            self._wake(mint)
             except (websockets.ConnectionClosed, OSError) as exc:
                 log.warning("LivePriceFeed disconnected (%s) — reconnect in %.0fs", exc, delay)
                 await asyncio.sleep(delay)
@@ -144,6 +149,35 @@ class LivePriceFeed:
         cutoff = time.monotonic() - max_age_s
         self._prices = {m: v for m, v in self._prices.items() if v[1] >= cutoff}
         self._liqs = {m: v for m, v in self._liqs.items() if v[1] >= cutoff}
+
+    def _wake(self, mint: str) -> None:
+        """Set the per-mint event (fire-and-forget) on a fresh trade tick."""
+        ev = self._events.get(mint)
+        if ev is not None:
+            ev.set()
+
+    def _event_for(self, mint: str) -> asyncio.Event:
+        """Lazily create the per-mint wake event."""
+        ev = self._events.get(mint)
+        if ev is None:
+            ev = asyncio.Event()
+            self._events[mint] = ev
+        return ev
+
+    async def wait_trade(self, mint: str, timeout_s: float) -> None:
+        """Wait up to timeout_s for the next trade tick on mint, else timeout.
+
+        Returns immediately (even on timeout) so callers just re-check the
+        price — this is the event-driven heartbeat for the exit monitor:
+        sub-second TP/SL reaction on real websocket ticks, with a 1s backstop
+        so a quiet mint still gets a regular check.
+        """
+        ev = self._event_for(mint)
+        ev.clear()
+        try:
+            await asyncio.wait_for(ev.wait(), timeout_s)
+        except asyncio.TimeoutError:
+            pass
 
     # --------------------------------------------------------------- queries
     def price_sol(self, mint: str, max_age_s: float = PRICE_MAX_AGE_S) -> float | None:

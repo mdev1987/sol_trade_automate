@@ -56,22 +56,27 @@ async def _estimate_entry_price(
     live_feed: LivePriceFeed | None,
     pair,
 ) -> tuple[float | None, float]:
-    """Best available USD price before/without a fill: pair > jupiter > live > feed-SOL.
+    """Best available USD price before/without a fill: live > pair > jupiter > feed-SOL.
 
-    Returns (price_usd, liquidity_usd).
+    The PumpAPI/PumpDev websocket trade stream is sub-second and freshest for a
+    brand-new launch (DexScreener pairs often aren't indexed for 30-60s), so it
+    is the FIRST source — matching the replay backtest, which fills at the first
+    buy event's price. Returns (price_usd, liquidity_usd).
     """
-    price = pair.price_usd if pair else None
-    liquidity = (pair.liquidity_usd or 0.0) if pair else 0.0
+    price = None
+    if live_feed is not None:
+        price = await live_feed.price_usd(mint)  # websocket, ~sub-second
+    if price is None and pair is not None:
+        price = pair.price_usd
     if price is None:
         price = await jupiter.price_usd(mint)
     if price is None and live_feed is not None:
-        price = await live_feed.price_usd(mint)
-    if price is None:
         raw_price = launch.raw.get("price")
-        if raw_price and live_feed is not None:
+        if raw_price:
             sol = await live_feed.sol_usd()
             if sol:
                 price = float(raw_price) * sol
+    liquidity = (pair.liquidity_usd or 0.0) if pair else 0.0
     return price, liquidity
 
 
@@ -92,7 +97,12 @@ async def _confirm_liquidity(
     window_s: float,
 ) -> tuple[bool, float | None]:
     """Poll on-chain pool liquidity until it proves >= floor (backtest rule:
-    fill only after the pool is real). Returns (ok, last_liq_usd)."""
+    fill only after the pool is real). Returns (ok, last_liq_usd).
+
+    Poll interval is 0.25s (4x/sec) so a confirming buy within a short
+    LIQ_CONFIRM_WINDOW_S is caught on the sub-second websocket stream, not a
+    beat later — matches the backtest filling at the first fill event.
+    """
     deadline = _t.monotonic() + max(window_s, 0.1)
     last_liq: float | None = None
     while True:
@@ -103,7 +113,7 @@ async def _confirm_liquidity(
                 return True, liq
         if _t.monotonic() >= deadline:
             return False, last_liq
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.25)
 
 
 async def execute_trade(
