@@ -20,10 +20,9 @@ Commands are only answered for the configured CHAT_ID.
 from __future__ import annotations
 
 import asyncio
-
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-from typing import Awaitable, Callable, Optional
 
 import telegramify_markdown
 from telegram import Bot, Update
@@ -63,17 +62,17 @@ class TelegramNotifier:
         chat_id: str = "",
         gate=None,
         stats=None,
-        on_stop: Optional[Callable[[], Awaitable[None]]] = None,
+        on_stop: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """Create the notifier; disabled until a token + chat id are set."""
         token = (bot_token or "").strip()
         self._chat_id = str(chat_id or "").strip()
         self._enabled = bool(token and self._chat_id)
-        self._bot: Optional[Bot] = Bot(token) if self._enabled else None
+        self._bot: Bot | None = Bot(token) if self._enabled else None
         self._gate = gate
         self._stats = stats
         self._on_stop = on_stop
-        self._application: Optional[Application] = None
+        self._application: Application | None = None
 
     @property
     def enabled(self) -> bool:
@@ -179,7 +178,7 @@ class TelegramNotifier:
         mint: str,
         symbol: str,
         score: float,
-        price_usd: Optional[float],
+        price_usd: float | None,
         liquidity_usd: float,
         volume_5m: float,
         buy_ratio: float,
@@ -209,7 +208,7 @@ class TelegramNotifier:
         exit_usd: float,
         hold_s: float,
         balance_usdc: float,
-        peak_roi_pct: Optional[float] = None,
+        peak_roi_pct: float | None = None,
     ) -> None:
         """A sell/exit card with PnL expressed in USDC."""
         icon = ICONS.get(reason, "🔻")
@@ -376,7 +375,7 @@ class TelegramNotifier:
         if self._bot is not None and getattr(self._bot, "_initialized", False):
             try:
                 await self._bot.shutdown()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110 — shutdown must not raise on a stale bot
                 pass
 
 

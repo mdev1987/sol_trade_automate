@@ -24,7 +24,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Optional
 
 import httpx
 
@@ -51,12 +50,12 @@ class DevReputationClient:
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        base: Optional[str] = None,
-        timeout_s: Optional[float] = None,
-        cache_ttl_s: Optional[float] = None,
-        max_creates_24h: Optional[int] = None,
-        min_age_hours: Optional[float] = None,
+        api_key: str | None = None,
+        base: str | None = None,
+        timeout_s: float | None = None,
+        cache_ttl_s: float | None = None,
+        max_creates_24h: int | None = None,
+        min_age_hours: float | None = None,
         transport=None,  # httpx transport (tests inject MockTransport)
     ) -> None:
         """Create the client with per-wallet cache and fail-open defaults."""
@@ -118,7 +117,7 @@ class DevReputationClient:
         now = time.time()
         creates_24h = 0
         created_mints: set = set()
-        first_ts: Optional[float] = None
+        first_ts: float | None = None
 
         for tx in txs or []:
             ts = tx.get("timestamp") or 0
@@ -165,7 +164,7 @@ class DevReputationClient:
                 data = resp.json()
                 self.lookups += 1
                 return data if isinstance(data, list) else []
-            except Exception as exc:  # noqa: BLE001 — fail-open upstream
+            except Exception as exc:
                 self.last_error = repr(exc)[:120]
                 if attempt == 1:
                     log.warning("Dev-rep fetch failed for %s (retrying): %s", wallet[:8], exc)

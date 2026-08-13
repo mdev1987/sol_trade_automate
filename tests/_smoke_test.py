@@ -137,7 +137,7 @@ from wallet import get_keypair
 
 kp = get_keypair(base58.b58encode(K().to_bytes()).decode())
 assert len(str(kp.pubkey())) in (43, 44)  # base58 of 32 bytes can be 43-44 chars
-print("[OK] wallet keypair (pubkey %s)" % str(kp.pubkey())[:8])
+print(f"[OK] wallet keypair (pubkey {str(kp.pubkey())[:8]})")
 
 # 7) single-instance lock (hardening v2)
 from singleton import SingleInstanceLock
@@ -166,7 +166,9 @@ print("[OK] daily loss limit (10.0) + UTC reset")
 
 # 9) dead-token exit (no_trades) — real PriceMonitor with fakes
 import asyncio
+
 import price_monitor as pm_mod
+
 
 class FakeLiveFeedDead:
     """Live feed that never sees trades for the mint (dead-token case)."""
@@ -176,7 +178,7 @@ class FakeLiveFeedDead:
         self._fa = feed_age
     async def price_usd(self, mint, max_age_s=10.0):
         """No price available."""
-        return None
+        return
     def last_trade_age(self, mint):
         """The configured last-trade age."""
         return self._last
@@ -197,7 +199,7 @@ class FakeJupNoPrice:
     """Jupiter stub that never has a price."""
     async def price_usd(self, mint):
         """No price available."""
-        return None
+        return
 
 async def _stale_case(last_age, feed_age, grace=0.0):
     """A monitor over a dead feed must emit a no_trades exit signal."""
@@ -238,7 +240,7 @@ class FakeLiveQuiet:
     """Live feed that is quiet but recently traded (not stale)."""
     async def price_usd(self, mint, max_age_s=10.0):
         """No fresh price."""
-        return None
+        return
     def last_trade_age(self, mint):
         """Recently traded -> not stale."""
         return 5.0  # recently traded -> not stale
@@ -261,7 +263,9 @@ print("[OK] monitor network resilience (DNS failure -> hold, no crash)")
 # 11) dev-reputation veto (Helius) — serial launcher blocked, clean passes,
 #     network failure fails OPEN, per-wallet cache
 import httpx as _httpx
+
 from dev_rep import DevReputationClient
+
 
 def _mk_launch(creator):
     """A minimal TokenLaunch fixture keyed by the given creator wallet."""
@@ -307,7 +311,7 @@ async def _veto_case(txs, creator):
 # serial launcher -> blocked
 blk, reason = asyncio.run(_veto_case(SERIAL_TXS, "SerialDev"))
 assert blk and "serial launcher" in reason, (blk, reason)
-print("[OK] dev-rep: serial launcher vetoed (%s)" % reason)
+print(f"[OK] dev-rep: serial launcher vetoed ({reason})")
 # clean wallet -> pass
 blk, reason = asyncio.run(_veto_case(CLEAN_TXS, "CleanDev"))
 assert not blk, reason
@@ -344,6 +348,7 @@ print("[OK] dev-rep: per-wallet cache (1 fetch for 2 veto calls)")
 #     trades queue; pumpdev AMM events (pool address present) are dropped;
 #     on-chain liquidity is normalized from both event shapes.
 from data_stream import PumpEventHub
+
 
 async def _hub_case():
     """Dispatch routing: curve events -> trades, AMM dropped, creates separate."""

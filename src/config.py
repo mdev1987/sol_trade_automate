@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Optional
 
 from dotenv import load_dotenv
 from solders.keypair import Keypair
@@ -80,7 +79,7 @@ def _parse_slippage_tiers(raw: str | None) -> tuple:
     return tuple(sorted(tiers, key=lambda t: t[0], reverse=True))
 
 
-def _load_keypair() -> Optional[Keypair]:
+def _load_keypair() -> Keypair | None:
     """Load the wallet keypair from PRIVATE_KEY (None in dry-run without one)."""
     pk = os.getenv("PRIVATE_KEY", "")
     if not pk:
@@ -172,12 +171,7 @@ class Settings:
 
     # --- wallet ---
     private_key: str = field(default_factory=lambda: os.getenv("PRIVATE_KEY", ""))
-    keypair: Optional[Keypair] = field(default_factory=_load_keypair)
-
-    # --- solana rpc (optional reads; not required for /order + /execute) ---
-    rpc_url: str = field(
-        default_factory=lambda: os.getenv("SOLANA_RPC_URL") or os.getenv("RPC_URL", "")
-    )
+    keypair: Keypair | None = field(default_factory=_load_keypair)
 
     # --- jupiter (execution + price fallback) ---
     jupiter_api_key: str = field(default_factory=lambda: os.getenv("JUPITER_API_KEY", ""))

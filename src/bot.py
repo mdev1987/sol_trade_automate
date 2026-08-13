@@ -21,7 +21,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time as _t
-from typing import Optional
 
 from config import USDC_DECIMALS, settings
 from control import TradeGate
@@ -113,10 +112,10 @@ async def execute_trade(
     jupiter: JupiterSwap,
     ds: DexScreenerClient,
     notifier: TelegramNotifier,
-    stats: Optional[TradeStats] = None,
-    live_feed: Optional[LivePriceFeed] = None,
+    stats: TradeStats | None = None,
+    live_feed: LivePriceFeed | None = None,
     stop_check=None,
-    dev_rep: Optional[DevReputationClient] = None,
+    dev_rep: DevReputationClient | None = None,
 ) -> tuple[bool, str]:
     """One full trade cycle. Returns (won, exit_reason). stop_check: callable()->bool
     — the monitor exits "shutdown" when True so a graceful stop sells the open
@@ -248,7 +247,7 @@ async def execute_trade(
                     if stats:
                         stats.record_buy_failure(candidate.launch.symbol, "topped_out")
                     return False, "topped_out"
-        except Exception:  # noqa: BLE001 — the gate must never block a fill
+        except Exception:
             log.exception("entry-mult gate failed open for %s", candidate.launch.symbol)
 
     # 1) BUY via Jupiter (quote gate + managed execute)
@@ -328,21 +327,21 @@ async def execute_trade(
         )
     try:
         signal = await monitor.run_until_exit()
-    except Exception:  # noqa: BLE001 — never lose a position's accounting
+    except Exception:
         log.exception("Monitor crashed for %s — emergency exit at last price",
                       candidate.launch.symbol)
         last_price = None
         if live_feed is not None:
             try:
                 last_price = await live_feed.price_usd(mint)
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110 — monitor down: fall back to jupiter
                 pass
         if last_price is None:
             last_price = await jupiter.price_usd(mint)  # already None-safe
         signal = ExitSignal(True, "error", last_price, None)
         try:
             await notifier.send_alert("MONITOR CRASH", f"{candidate.launch.symbol} — emergency exit")
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110 — alert must never block the emergency exit
             pass
     log.info("EXIT SIGNAL: %s @ $%s", signal.reason, signal.price_usd)
 
@@ -386,7 +385,7 @@ async def execute_trade(
                 stats.record_sell_failure(candidate.launch.symbol, str(sell_result.error))
             try:
                 await notifier.send_alert("SELL FAILED", f"{candidate.launch.symbol} — {sell_result.error}")
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110 — alert must never block the sell result
                 pass
             return False, "sell_failed"
 
@@ -475,7 +474,7 @@ async def _wait_daily_reset(stats: TradeStats, gate: TradeGate, notifier: Telegr
         await notifier.send_alert(
             "DAILY LOSS LIMIT", f"Today {stats.daily_pnl_usd:+.2f} — halted until UTC midnight"
         )
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110 — alert must never block the halt loop
         pass
     while not gate.shutdown:
         wait = stats.next_day_reset_seconds()
@@ -492,10 +491,10 @@ async def _wait_daily_reset(stats: TradeStats, gate: TradeGate, notifier: Telegr
 async def trade_loop(
     queue: asyncio.Queue[Candidate],
     gate: TradeGate,
-    stats: Optional[TradeStats] = None,
-    notifier: Optional[TelegramNotifier] = None,
-    live_feed: Optional[LivePriceFeed] = None,
-    dev_rep: Optional[DevReputationClient] = None,
+    stats: TradeStats | None = None,
+    notifier: TelegramNotifier | None = None,
+    live_feed: LivePriceFeed | None = None,
+    dev_rep: DevReputationClient | None = None,
 ) -> None:
     """Consume validated candidates forever, one trade at a time.
 
@@ -551,7 +550,7 @@ async def trade_loop(
                 )
                 if stats is not None:
                     stats.quote_gate = jupiter.quote_summary()
-            except Exception:  # noqa: BLE001 — one bad trade must not kill the loop
+            except Exception:
                 log.exception("Trade cycle failed for %s", candidate.launch.mint)
     finally:
         await jupiter.close()

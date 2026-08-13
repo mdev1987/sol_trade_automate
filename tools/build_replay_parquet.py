@@ -138,7 +138,7 @@ def build_hour(src_path: str, out_path: str, batch: int = 500_000) -> dict:
                         continue
                     try:
                         ev = orjson.loads(line)
-                    except Exception:  # noqa: BLE001 — one bad line must not kill the hour
+                    except Exception:  # noqa: BLE001, S112 — one bad line must not kill the hour
                         continue
                     if not ev.get("action"):
                         continue
@@ -158,7 +158,7 @@ def build_hour(src_path: str, out_path: str, batch: int = 500_000) -> dict:
                     rows += 1
                     if ev["action"] == "create":
                         creates += 1
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110 — one bad trailing line must not kill the hour
                 pass
         if rows % batch != 0:
             _write_batch(writer, cols)

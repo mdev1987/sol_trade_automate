@@ -108,8 +108,8 @@ def main() -> None:
     sol_usd = args.sol_usd
     sol_series: dict[int, float] = {}
     if args.sol_usd_file:
-        sol_series = {int(k): float(v) for k, v in json.load(
-            open(args.sol_usd_file)).items()}
+        with open(args.sol_usd_file) as f:
+            sol_series = {int(k): float(v) for k, v in json.load(f).items()}
         if sol_series:
             sol_usd = sol_series[min(sol_series)]
 
@@ -269,7 +269,7 @@ def main() -> None:
                         dev_creates[dev] += 1
                     try:
                         launch = make_launch(row)
-                    except Exception:
+                    except Exception:  # noqa: BLE001 — one malformed row must not kill the run
                         stats["parse_error"] += 1
                         continue
                     if not rug_check(launch, None, row).passed:
@@ -399,9 +399,8 @@ def main() -> None:
         json.dump(res, f, indent=2)
     with open(str(Path(args.out).with_suffix(".csv")), "w", encoding="utf-8") as f:
         f.write("ts,symbol,score,entry_usd,entry_liq,entry_mult,exit_reason,exit_usd,pnl,amount,held_s\n")
-        for t in trades:
-            f.write(f"{t['ts']},{t['symbol']},{t['score']},{t['entry_usd']},{t['entry_liq']},{t['entry_mult']},{t['exit_reason']},"
-                    f"{t['exit_usd']},{t['pnl']},{t['amount']},{t['held_s']}\n")
+        f.writelines(f"{t['ts']},{t['symbol']},{t['score']},{t['entry_usd']},{t['entry_liq']},{t['entry_mult']},{t['exit_reason']},"
+                    f"{t['exit_usd']},{t['pnl']},{t['amount']},{t['held_s']}\n" for t in trades)
     print(json.dumps(res, indent=2))
 
 

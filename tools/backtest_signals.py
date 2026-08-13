@@ -183,8 +183,8 @@ def main() -> None:
     sol_usd = args.sol_usd
     sol_series: dict[int, float] = {}
     if args.sol_usd_file:
-        sol_series = {int(k): float(v) for k, v in json.load(
-            open(args.sol_usd_file)).items()}
+        with open(args.sol_usd_file) as f:
+            sol_series = {int(k): float(v) for k, v in json.load(f).items()}
         if sol_series:
             sol_usd = sol_series[min(sol_series)]
 
@@ -458,10 +458,9 @@ def main() -> None:
         json.dump(res, f, indent=2)
     with open(str(Path(args.out).with_suffix(".csv")), "w", encoding="utf-8") as f:
         f.write("ts,symbol,score,gain,entry_usd,entry_liq,exit_reason,exit_usd,pnl,amount,held_s\n")
-        for t in trades:
-            f.write(f"{t['ts']},{t['symbol']},{t['score']},{t['gain']},{t['entry_usd']},"
+        f.writelines(f"{t['ts']},{t['symbol']},{t['score']},{t['gain']},{t['entry_usd']},"
                     f"{t['entry_liq']},{t['exit_reason']},{t['exit_usd']},{t['pnl']},"
-                    f"{t['amount']},{t['held_s']}\n")
+                    f"{t['amount']},{t['held_s']}\n" for t in trades)
     print(json.dumps(res, indent=2))
 
 

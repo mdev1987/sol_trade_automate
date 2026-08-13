@@ -31,7 +31,6 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Optional
 
 import httpx
 from solders.keypair import Keypair
@@ -52,7 +51,7 @@ _LATENCY_SAMPLES_MAX = 500
 class JupiterError(RuntimeError):
     """Raised when a swap order/execute fails and cannot be retried."""
 
-    def __init__(self, message: str, status: Optional[int] = None) -> None:
+    def __init__(self, message: str, status: int | None = None) -> None:
         """Create the error with an optional HTTP status code."""
         super().__init__(message)
         self.status = status
@@ -74,7 +73,7 @@ class QuoteResult:
     """Outcome of a quote-gate call (verified order or a skip reason)."""
 
     success: bool
-    order: Optional[dict]  # valid ``/order`` payload, ready to execute
+    order: dict | None  # valid ``/order`` payload, ready to execute
     input_amount: int  # raw USDC
     output_amount: int  # raw expected out
     price_impact_pct: float
@@ -119,7 +118,7 @@ class JupiterSwap:
             self._headers["x-api-key"] = s.jupiter_api_key
         self._slippage_bps = s.slippage_bps
         self._qcfg = s.quote
-        self._keypair: Optional[Keypair] = s.keypair
+        self._keypair: Keypair | None = s.keypair
         if self._keypair is None and s.dry_run:
             # Paper mode with no real wallet: derive a throwaway keypair purely
             # so the quote-gate runs (/order needs a taker pubkey). It never
@@ -200,7 +199,7 @@ class JupiterSwap:
         output_mint: str,
         amount: int,
         slippage_bps: int,
-        taker: Optional[str] = None,
+        taker: str | None = None,
     ) -> dict:
         """Request a swap quote (and, with a taker, an assembled transaction).
 
@@ -341,9 +340,9 @@ class JupiterSwap:
             self._qstats["quote_http_error"] += 1
             log.warning("quote http error for %s: %s", mint, exc)
             return QuoteResult(False, None, amount_raw, 0, 0.0, 0, 0.0, "quote_http_error")
-        except Exception as exc:  # noqa: BLE001
+        except Exception:
             self._qstats["quote_exception"] += 1
-            log.exception("quote exception for %s: %s", mint, exc)
+            log.exception("quote exception for %s", mint)
             return QuoteResult(False, None, amount_raw, 0, 0.0, 0, 0.0, "quote_exception")
 
         latency_ms = (time.monotonic() - t0) * 1000
@@ -402,7 +401,7 @@ class JupiterSwap:
         amount_raw: int,
         liquidity_usd: float = 0.0,
         force: bool = False,
-    ) -> Optional[QuoteResult]:
+    ) -> QuoteResult | None:
         """Verify tradability for ``mint`` and return a ready-to-execute order.
 
         Chooses slippage from ``liquidity_usd`` tiers, retries "no route"
@@ -419,7 +418,7 @@ class JupiterSwap:
             if cached and now - cached[0] < self._qcfg.cache_ttl_sec:
                 return cached[1]
 
-        result: Optional[QuoteResult] = None
+        result: QuoteResult | None = None
         for attempt in range(max(self._qcfg.retries, 1)):
             result = await self._do_quote(mint, amount_raw, slippage)
             if result.success or not result.retryable:
@@ -447,7 +446,7 @@ class JupiterSwap:
 
     async def sell(self, mint: str, amount_raw: int) -> SwapResult:
         """Sell ``amount_raw`` of ``mint`` for USDC, escalating slippage."""
-        last: Optional[SwapResult] = None
+        last: SwapResult | None = None
         for slippage in (self._slippage_bps,) + SELL_SLIPPAGE_ESCALATION:
             try:
                 order = await self._order(
@@ -474,7 +473,7 @@ class JupiterSwap:
         return last or SwapResult(False, "", amount_raw, 0, "sell failed")
 
     # ------------------------------------------------------------ price fallback
-    async def price_usd(self, mint: str) -> Optional[float]:
+    async def price_usd(self, mint: str) -> float | None:
         """Jupiter Price API fallback: GET /price/v3?ids=MINT"""
         try:
             resp = await self._client.get(

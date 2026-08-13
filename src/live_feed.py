@@ -132,7 +132,7 @@ class LivePriceFeed:
                 delay = min(delay * 2, RECONNECT_MAX_S)
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 — keep the feed alive
+            except Exception:
                 log.exception("LivePriceFeed error")
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, RECONNECT_MAX_S)

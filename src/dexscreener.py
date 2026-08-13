@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
 import httpx
 
@@ -31,15 +30,15 @@ class Pair:
     base_mint: str
     base_symbol: str
     quote_symbol: str
-    price_usd: Optional[float]
-    price_native: Optional[float]
-    liquidity_usd: Optional[float]
+    price_usd: float | None
+    price_native: float | None
+    liquidity_usd: float | None
     volume_m5: float
     txns_m5_buys: int
     txns_m5_sells: int
-    market_cap: Optional[float]
-    fdv: Optional[float]
-    pair_created_at: Optional[int]  # unix ms
+    market_cap: float | None
+    fdv: float | None
+    pair_created_at: int | None  # unix ms
     url: str = ""
 
     # --- derived metrics used by filters/scoring ---
@@ -56,7 +55,7 @@ class Pair:
         return self.txns_m5_buys / self.txns_m5_sells
 
     @classmethod
-    def from_json(cls, p: dict) -> "Pair":
+    def from_json(cls, p: dict) -> Pair:
         """Build a Pair from a DexScreener pair JSON object."""
         base = p.get("baseToken") or {}
         quote = p.get("quoteToken") or {}
@@ -82,7 +81,7 @@ class Pair:
         )
 
 
-def _to_float(v) -> Optional[float]:
+def _to_float(v) -> float | None:
     """Coerce a value to float, returning None for junk/empty."""
     if v in (None, "", "null"):
         return None
@@ -125,7 +124,7 @@ class DexScreenerClient:
         pairs = [Pair.from_json(p) for p in data] if isinstance(data, list) else []
         return pairs
 
-    def pick_pair(self, pairs: list[Pair]) -> Optional[Pair]:
+    def pick_pair(self, pairs: list[Pair]) -> Pair | None:
         """Pick the pair we actually trade — prefers pump/pump-amm, then raydium."""
         if not pairs:
             return None

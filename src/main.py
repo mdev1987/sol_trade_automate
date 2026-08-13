@@ -27,8 +27,8 @@ import time as _t
 from bot import trade_loop
 from config import settings
 from control import TradeGate
-from dev_rep import DevReputationClient
 from data_stream import LaunchFeedRouter
+from dev_rep import DevReputationClient
 from live_feed import LivePriceFeed
 from monitoring import setup_logging
 from signal_scanner import signal_scan_loop
@@ -63,7 +63,7 @@ async def heartbeat_loop(notifier, stats, t0) -> None:
             log.info("Heartbeat status card sent")
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 — a failed card must not kill main
+        except Exception:
             log.exception("Heartbeat card failed")
 
 
@@ -108,7 +108,7 @@ async def main() -> None:
     t0 = _t.monotonic()
     stop = asyncio.Event()
 
-    def _shutdown(*_) -> None:  # noqa: ANN002 — SIGINT/SIGTERM handler
+    def _shutdown(*_) -> None:
         """Signal handler: latch the stop event to begin graceful shutdown."""
         if not stop.is_set():  # signals can arrive twice (timeout/uv forwarding)
             log.info("Shutdown signal received — closing the gate")
@@ -143,7 +143,7 @@ async def main() -> None:
     try:
         await notifier.test()
         await notifier.start_polling()
-    except Exception:  # noqa: BLE001
+    except Exception:
         log.exception("Telegram startup failed — continuing without command bot")
 
     def _log_task_error(task: asyncio.Task) -> None:

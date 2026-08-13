@@ -3,24 +3,25 @@
 IMPORTANT: `price_monitor.PriceMonitor` is patched BEFORE `bot` is imported, so
 `bot.execute_trade` sees the fake monitor (it imports the name at module load).
 """
-import sys
 import pathlib
+import sys
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 import asyncio
 
 from config import settings
-settings.dry_run = True  # force dry-run regardless of .env
 
-from data_stream import TokenLaunch
-from dexscreener import Pair
-from token_scanner import Candidate
-from risk_management import RiskManager
-from stats import TradeStats
-from jupiter_swap import SwapResult
+settings.dry_run = True  # force dry-run regardless of .env
 
 # --- fake PriceMonitor exit (avoid 8s polling) — MUST precede `from bot import ...` ---
 import price_monitor
+from data_stream import TokenLaunch
+from dexscreener import Pair
+from jupiter_swap import SwapResult
+from risk_management import RiskManager
+from stats import TradeStats
+from token_scanner import Candidate
 
 
 class FakeMonitor:
@@ -32,7 +33,6 @@ class FakeMonitor:
 
     def __init__(self, *a, **k):
         """No-op constructor (drop-in PriceMonitor replacement)."""
-        pass
 
     async def run_until_exit(self):
         """Immediately return the canned exit signal."""
@@ -93,7 +93,6 @@ class FakeJupiter:
 
     async def close(self):
         """No-op for the fake."""
-        pass
 
 
 class FakeDexScreener:
@@ -108,7 +107,6 @@ class FakeDexScreener:
 
     async def close(self):
         """No-op for the fake."""
-        pass
 
 
 async def main():

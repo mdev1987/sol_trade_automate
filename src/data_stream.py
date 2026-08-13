@@ -18,8 +18,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Optional
 
 import websockets
 
@@ -42,8 +42,8 @@ class TokenLaunch:
     creator: str
     signature: str
     initial_buy_tokens: float
-    dev_sol: Optional[float]  # SOL the developer bought at launch
-    market_cap_sol: Optional[float]
+    dev_sol: float | None  # SOL the developer bought at launch
+    market_cap_sol: float | None
     quote_mint: str
     is_mayhem_mode: bool
     is_cashback_enabled: bool
@@ -52,7 +52,7 @@ class TokenLaunch:
     raw: dict = field(default_factory=dict)
 
     @classmethod
-    def from_event(cls, ev: dict, source: str = "pumpapi") -> "TokenLaunch":
+    def from_event(cls, ev: dict, source: str = "pumpapi") -> TokenLaunch:
         """Parse either a PumpAPI event (action=create) or PumpDev event (txType=create)."""
         action = ev.get("action") or ev.get("txType")
         if action not in ("create",):

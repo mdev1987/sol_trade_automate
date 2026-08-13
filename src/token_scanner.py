@@ -15,7 +15,6 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
 
 from config import settings
 from control import TradeGate
@@ -38,7 +37,7 @@ class Candidate:
     """
 
     launch: TokenLaunch
-    pair: Optional[Pair]
+    pair: Pair | None
     score: float
     scanned_at: str
 
@@ -103,8 +102,8 @@ async def process_launch(launch: TokenLaunch) -> Candidate | None:
 
 async def scan_loop(
     queue: asyncio.Queue[Candidate],
-    gate: Optional[TradeGate] = None,
-    router: Optional[LaunchFeedRouter] = None,
+    gate: TradeGate | None = None,
+    router: LaunchFeedRouter | None = None,
 ) -> None:
     """Run the scanner forever. One scan window = MAX_SCAN_WINDOW minutes.
 
@@ -145,7 +144,7 @@ async def scan_loop(
                         else:
                             passed, _ = passes_feed_filters(launch)
                             stats["filter_skips" if not passed else "score_skips"] += 1
-                except Exception:  # noqa: BLE001 — never kill the scanner
+                except Exception:
                     log.exception("Error processing launch %s", launch.mint)
                 # scan window expired? restart cycle
                 if time.monotonic() - cycle_start > settings.max_scan_window_min * 60:
