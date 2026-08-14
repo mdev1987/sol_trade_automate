@@ -249,6 +249,24 @@ class Settings:
     # with the entry-price estimate, so latency impact is ~0 in the common case)
     dev_rep_cache_ttl_min: float = field(default_factory=lambda: _get_float("DEV_REP_CACHE_TTL_MIN", 10.0))
     dev_rep_timeout_s: float = field(default_factory=lambda: _get_float("DEV_REP_TIMEOUT_S", 2.5))
+    # --- dev-rep rate limiting (Helius throttles aggressively) ---
+    # global min seconds between Helius lookups (serializes calls; keeps the
+    # burst of qualified candidates well inside free-tier limits)
+    dev_rep_min_interval_s: float = field(
+        default_factory=lambda: _get_float("DEV_REP_MIN_INTERVAL_S", 1.0)
+    )
+    # on a 429, wait Retry-After (if given) but never longer than this cap
+    dev_rep_retry_after_cap_s: float = field(
+        default_factory=lambda: _get_float("DEV_REP_RETRY_AFTER_CAP_S", 30.0)
+    )
+    # consecutive 429s after which lookups pause for a cooldown (fail-open:
+    # wallets checked during cooldown pass; trading is never blocked)
+    dev_rep_consec_429_limit: int = field(
+        default_factory=lambda: _get_int("DEV_REP_CONSEC_429_LIMIT", 3)
+    )
+    dev_rep_cooldown_s: float = field(
+        default_factory=lambda: _get_float("DEV_REP_COOLDOWN_S", 30.0)
+    )
 
     # --- telegram alerts / reporting ---
     telegram_bot_token: str = field(

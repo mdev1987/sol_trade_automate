@@ -25,6 +25,10 @@ assert settings.max_entry_peak_pct == 0.0  # anti-peak entry gate (off by defaul
 assert settings.slippage_bps == 150
 assert settings.play_floor == 1.0
 assert settings.dry_run is True
+assert settings.dev_rep_min_interval_s == 1.0
+assert settings.dev_rep_retry_after_cap_s == 30.0
+assert settings.dev_rep_consec_429_limit == 3
+assert settings.dev_rep_cooldown_s == 30.0
 print("[OK] config defaults")
 
 # 2) data_stream TokenLaunch parsing (PumpDev create event shape)
@@ -410,6 +414,68 @@ l2 = asyncio.run(dr.veto(_mk_launch("CachedDev")))
 assert calls["n"] == 1, calls
 asyncio.run(dr.close())
 print("[OK] dev-rep: per-wallet cache (1 fetch for 2 veto calls)")
+
+# 11b) dev-rep rate limiting: Retry-After honored, then success
+def rate_limited(request):
+    """429 once with Retry-After, then return the clean history."""
+    rate_limited.n += 1
+    if rate_limited.n == 1:
+        return _httpx.Response(429, json={"error": "Too Many Requests"},
+                               headers={"Retry-After": "1"})
+    return _httpx.Response(200, json=CLEAN_TXS)
+rate_limited.n = 0
+dr = DevReputationClient(api_key="test", timeout_s=5.0,
+                         min_interval_s=0.0, retry_after_cap_s=2.0,
+                         transport=_httpx.MockTransport(rate_limited))
+t0 = time.monotonic()
+blk, reason = asyncio.run(dr.veto(_mk_launch("RetryDev")))
+dt = time.monotonic() - t0
+assert not blk and not reason
+assert rate_limited.n == 2, rate_limited.n   # 429 then retry -> 200
+assert dt >= 1.0, f"Retry-After sleep too short: {dt:.2f}s"
+asyncio.run(dr.close())
+print("[OK] dev-rep: 429 honors Retry-After then succeeds")
+
+# 11c) dev-rep cooldown: consecutive 429s pause lookups (fail-open, no block)
+calls2 = {"n": 0}
+def always429(request):
+    """Always 429 — trips the cooldown, then lookups fail-open."""
+    calls2["n"] += 1
+    return _httpx.Response(429, json={"error": "Too Many Requests"},
+                           headers={"Retry-After": "1"})
+dr = DevReputationClient(api_key="test", timeout_s=5.0,
+                         min_interval_s=0.0, retry_after_cap_s=2.0,
+                         consec_429_limit=2, cooldown_s=60.0,
+                         transport=_httpx.MockTransport(always429))
+# first wallet: exhausts the 2 retries -> cooldown trips, fail-open pass
+blk, reason = asyncio.run(dr.veto(_mk_launch("HotWalletA")))
+assert not blk and not reason
+assert calls2["n"] == 2, calls2          # exactly 2 HTTP attempts before cooldown
+# second wallet during cooldown: no HTTP call, still fails open
+n_before = calls2["n"]
+blk, reason = asyncio.run(dr.veto(_mk_launch("HotWalletB")))
+assert not blk and not reason
+assert calls2["n"] == n_before, calls2   # zero calls during cooldown
+asyncio.run(dr.close())
+print("[OK] dev-rep: repeated 429 -> fail-open cooldown (no HTTP, no block)")
+
+# 11d) dev-rep min-interval throttle: lookups spaced apart
+def counting2(request):
+    """Always return clean history and count calls."""
+    counting2.n += 1
+    return _httpx.Response(200, json=CLEAN_TXS)
+counting2.n = 0
+dr = DevReputationClient(api_key="test", timeout_s=2.0, min_interval_s=0.2,
+                         transport=_httpx.MockTransport(counting2))
+t0 = time.monotonic()
+l1 = asyncio.run(dr.veto(_mk_launch("ThrottleDev")))
+t1 = time.monotonic()
+l2 = asyncio.run(dr.veto(_mk_launch("ThrottleDev2")))
+t2 = time.monotonic()
+assert counting2.n == 2, counting2.n
+assert t2 - t1 >= 0.2, f"lookups too close: {(t2 - t1):.3f}s"
+asyncio.run(dr.close())
+print("[OK] dev-rep: min-interval throttle spaces lookups")
 
 # 12) PumpEventHub dispatch: pumpapi curve + pumpdev curve both feed the
 #     trades queue; pumpdev AMM events (pool address present) are dropped;
