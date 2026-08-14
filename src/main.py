@@ -168,9 +168,12 @@ async def main() -> None:
         scanner_task = asyncio.create_task(scan_loop(queue, gate, router), name="scanner")
         log.info("STRATEGY_MODE=launch — pump.fun launch sniper")
     dev_rep = None
-    if settings.dev_rep_enabled and settings.helius_api_key:
-        dev_rep = DevReputationClient(settings.helius_api_key)
-        log.info("Dev-reputation veto enabled (Helius, read-only, fail-open)")
+    if settings.dev_rep_enabled and settings.helius_api_keys:
+        dev_rep = DevReputationClient(api_keys=list(settings.helius_api_keys))
+        log.info(
+            "Dev-reputation veto enabled (Helius x%d, read-only, fail-open, 429 failover)",
+            len(settings.helius_api_keys),
+        )
     bot_task = asyncio.create_task(
         trade_loop(queue, gate, stats, notifier, live_feed, dev_rep=dev_rep), name="bot"
     )

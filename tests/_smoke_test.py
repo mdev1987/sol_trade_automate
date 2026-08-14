@@ -30,6 +30,9 @@ assert settings.dev_rep_min_interval_s == 1.0
 assert settings.dev_rep_retry_after_cap_s == 30.0
 assert settings.dev_rep_consec_429_limit == 3
 assert settings.dev_rep_cooldown_s == 30.0
+assert settings.helius_base_url == "https://mainnet.helius-rpc.com"
+assert len(settings.helius_api_keys) >= 1, "at least one Helius key configured"
+assert settings.helius_api_key == settings.helius_api_keys[0]
 print("[OK] config defaults")
 
 # 2) data_stream TokenLaunch parsing (PumpDev create event shape)
@@ -477,6 +480,47 @@ assert counting2.n == 2, counting2.n
 assert t2 - t1 >= 0.2, f"lookups too close: {(t2 - t1):.3f}s"
 asyncio.run(dr.close())
 print("[OK] dev-rep: min-interval throttle spaces lookups")
+
+# 11e) dev-rep key failover: first key exhausted (429), second key succeeds
+key_hits = {"a": 0, "b": 0}
+def failover(request):
+    """Key A always 429s; key B returns the clean history."""
+    req_key = request.url.params.get("api-key")
+    if req_key == "key-a":
+        key_hits["a"] += 1
+        return _httpx.Response(429, json={"error": "Too Many Requests"})
+    key_hits["b"] += 1
+    return _httpx.Response(200, json=CLEAN_TXS)
+dr = DevReputationClient(api_keys=["key-a", "key-b"], timeout_s=5.0,
+                         min_interval_s=0.0, consec_429_limit=2,
+                         transport=_httpx.MockTransport(failover))
+blk, reason = asyncio.run(dr.veto(_mk_launch("FailoverDev")))
+assert not blk and not reason
+assert key_hits["a"] == 1, key_hits          # rotated away after the first 429
+assert key_hits["b"] == 1, key_hits          # succeeded on the fallback key
+asyncio.run(dr.close())
+print("[OK] dev-rep: exhausted key A rotates to key B (failover works)")
+
+# 11f) dev-rep all-keys exhausted: cooldown trips (fail-open, no block)
+calls3 = {"n": 0}
+def always429_any(request):
+    """Every key 429s — all-key exhaustion trips the cooldown."""
+    calls3["n"] += 1
+    return _httpx.Response(429, json={"error": "Too Many Requests"},
+                           headers={"Retry-After": "1"})
+dr = DevReputationClient(api_keys=["key-a", "key-b"], timeout_s=5.0,
+                         min_interval_s=0.0, retry_after_cap_s=2.0,
+                         consec_429_limit=2, cooldown_s=60.0,
+                         transport=_httpx.MockTransport(always429_any))
+blk, reason = asyncio.run(dr.veto(_mk_launch("AllHotA")))
+assert not blk and not reason
+assert calls3["n"] == 4, calls3  # both keys 429'd, backoff cycle, both again
+n3 = calls3["n"]
+blk, reason = asyncio.run(dr.veto(_mk_launch("AllHotB")))
+assert not blk and not reason
+assert calls3["n"] == n3, calls3  # zero calls during cooldown
+asyncio.run(dr.close())
+print("[OK] dev-rep: all keys 429 -> cooldown (no HTTP during pause, fail-open)")
 
 # 12) PumpEventHub dispatch: pumpapi curve + pumpdev curve both feed the
 #     trades queue; pumpdev AMM events (pool address present) are dropped;

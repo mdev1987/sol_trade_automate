@@ -80,6 +80,7 @@ class DevReputationClient:
     def __init__(
         self,
         api_key: str | None = None,
+        api_keys: list[str] | None = None,
         base: str | None = None,
         timeout_s: float | None = None,
         cache_ttl_s: float | None = None,
@@ -91,9 +92,18 @@ class DevReputationClient:
         cooldown_s: float | None = None,
         transport=None,  # httpx transport (tests inject MockTransport)
     ) -> None:
-        """Create the client with per-wallet cache and fail-open defaults."""
-        self._key = api_key if api_key is not None else settings.helius_api_key
-        self._base = (base or "https://mainnet.helius-rpc.com").rstrip("/")
+        """Create the client with per-wallet cache and fail-open defaults.
+
+        ``api_keys`` is the ordered list of Helius keys. On a 429 the client
+        rotates to the next key (failover), so an exhausted key falls through
+        to the next one instead of killing the signal. ``api_key`` is kept for
+        backward compatibility and is treated as a single-key list.
+        """
+        self._keys = list(api_keys) if api_keys else ([api_key] if api_key else list(settings.helius_api_keys))
+        if not self._keys:
+            self._keys = [""]
+        self._key_idx = 0
+        self._base = (base or settings.helius_base_url).rstrip("/")
         self._timeout = timeout_s if timeout_s is not None else settings.dev_rep_timeout_s
         self._ttl = cache_ttl_s if cache_ttl_s is not None else settings.dev_rep_cache_ttl_min * 60
         self._max_creates = (
@@ -218,12 +228,18 @@ class DevReputationClient:
         return False, ""
 
     async def _fetch(self, wallet: str) -> list:
-        """One bounded fetch with a 429-aware retry — DNS blips must not cost
-        the signal, but the whole lookup stays within the timeout budget.
+        """One bounded fetch with 429-aware key failover and retry — DNS blips
+        must not cost the signal, but the whole lookup stays within the
+        timeout budget.
+
+        Key failover: on a 429 from a non-final key the client rotates to the
+        next configured Helius key, so an exhausted key falls through instead
+        of killing the signal. When *every* key 429s it honors Retry-After
+        (capped) and retries the cycle; repeated all-keys 429s trip a
+        fail-open cooldown (see veto()).
 
         Global rate limiting: lookups are serialized and spaced by
-        DEV_REP_MIN_INTERVAL_S. A 429 waits Retry-After (capped); repeated
-        consecutive 429s trip a fail-open cooldown (see veto()).
+        DEV_REP_MIN_INTERVAL_S.
         """
         async with self._gate:
             # space requests: never fire before the last call + min interval
@@ -231,44 +247,67 @@ class DevReputationClient:
             if wait > 0:
                 await asyncio.sleep(wait)
             url = HELIUS_TX_URL.format(base=self._base, wallet=wallet)
-            params = {"api-key": self._key, "limit": 100}
             deadline = time.monotonic() + self._timeout
-            for attempt in (1, 2):
+            n_keys = len(self._keys)
+            while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0.3:
                     break
-                try:
-                    resp = await self._client.get(url, params=params, timeout=remaining)
-                    self._next_call_mono = time.monotonic() + self._min_interval
-                    if resp.status_code == 429:
-                        self._consec_429 += 1
-                        self._degraded = True
-                        wait = _retry_after_s(resp, self._retry_cap)
-                        self.last_error = "429 Too Many Requests (Retry-After handled)"
-                        if attempt == 1 and self._consec_429 < self._consec_limit:
+                all_failed = True
+                for k_off in range(n_keys):
+                    key = self._keys[(self._key_idx + k_off) % n_keys]
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0.3:
+                        all_failed = False
+                        break
+                    try:
+                        resp = await self._client.get(
+                            url, params={"api-key": key, "limit": 100}, timeout=remaining
+                        )
+                        self._next_call_mono = time.monotonic() + self._min_interval
+                        if resp.status_code == 429:
+                            self._degraded = True
+                            self.last_error = "429 Too Many Requests (Retry-After handled)"
+                            if k_off < n_keys - 1:
+                                log.info(
+                                    "Dev-rep key %s exhausted (429) — rotating to next key",
+                                    key[:8],
+                                )
+                                continue
+                            # final key 429 -> Retry-After backoff, then retry the cycle
+                            self._consec_429 += 1
+                            if self._consec_429 >= self._consec_limit:
+                                self._cooldown_until = time.monotonic() + self._cooldown
+                                log.warning(
+                                    "Dev-rep throttled %d x — pausing lookups %.0fs (fail-open)",
+                                    self._consec_429, self._cooldown,
+                                )
+                                raise RuntimeError("dev-rep lookup unavailable (429)")
+                            wait = _retry_after_s(resp, self._retry_cap)
                             log.warning(
                                 "Dev-rep rate-limited for %s — backing off %.0fs (consec 429=%d)",
                                 wallet[:8], wait, self._consec_429,
                             )
                             await asyncio.sleep(min(wait, remaining))
-                            continue
-                        if self._consec_429 >= self._consec_limit:
-                            self._cooldown_until = time.monotonic() + self._cooldown
-                            log.warning(
-                                "Dev-rep throttled %d x — pausing lookups %.0fs (fail-open)",
-                                self._consec_429, self._cooldown,
-                            )
-                        raise RuntimeError("dev-rep lookup unavailable (429)")
-                    self._consec_429 = 0
-                    resp.raise_for_status()
-                    data = resp.json()
-                    self.lookups += 1
-                    return data if isinstance(data, list) else []
-                except Exception as exc:
-                    self.last_error = repr(exc)[:120]
-                    if attempt == 1:
-                        log.warning("Dev-rep fetch failed for %s (retrying): %s", wallet[:8], exc)
-                        await asyncio.sleep(0.4)
-                    else:
+                            all_failed = False
+                            break  # start a fresh key cycle
+                        self._consec_429 = 0
+                        resp.raise_for_status()
+                        data = resp.json()
+                        self.lookups += 1
+                        # remember the working key so the next call starts there
+                        self._key_idx = (self._key_idx + k_off) % n_keys
+                        return data if isinstance(data, list) else []
+                    except RuntimeError:
                         raise
+                    except Exception as exc:  # noqa: BLE001 — fail-open, retry next key
+                        self.last_error = repr(exc)[:120]
+                        log.warning(
+                            "Dev-rep fetch failed for %s (key %s): %s",
+                            wallet[:8], key[:8], exc,
+                        )
+                        # network blip: try the next key
+                        continue
+                if all_failed:
+                    break  # every key errored (network only) -> fail-open below
             raise RuntimeError("dev-rep lookup unavailable")

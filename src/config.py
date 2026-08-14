@@ -101,6 +101,12 @@ def _parse_helius_key(url: str) -> str:
         return ""
 
 
+def _helius_keys() -> tuple[str, ...]:
+    """Parse the HELIUS_API_KEYS env var (single key or comma-separated list)."""
+    raw = os.getenv("HELIUS_API_KEYS", os.getenv("HELIUS_API_KEY") or _parse_helius_key(os.getenv("SOLANA_RPC_URL", "")))
+    return tuple(k.strip() for k in raw.split(",") if k.strip())
+
+
 @dataclass
 class Settings:
     """All runtime configuration, read from env vars at import time."""
@@ -243,12 +249,18 @@ class Settings:
     )
 
     # --- helius dev-reputation veto (read-only signal, fail-open) ---
-    # Helius enhanced-transactions API key; falls back to the api-key embedded
-    # in SOLANA_RPC_URL so no extra secret is needed if that URL is Helius.
-    helius_api_key: str = field(
-        default_factory=lambda: os.getenv("HELIUS_API_KEY")
-        or _parse_helius_key(os.getenv("SOLANA_RPC_URL", ""))
+    # Helius enhanced-transactions base URL + one or more API keys. Read from
+    # .env (HELIUS_BASE_URL / HELIUS_API_KEYS). HELIUS_API_KEYS may be a single
+    # key or a comma-separated list — on a 429 the client rotates to the next
+    # key (failover) so an exhausted key doesn't kill the signal. Each key also
+    # falls back to the api-key embedded in SOLANA_RPC_URL if unset. The base
+    # defaults to mainnet Helius if not set.
+    helius_base_url: str = field(
+        default_factory=lambda: os.getenv("HELIUS_BASE_URL", "https://mainnet.helius-rpc.com").rstrip("/")
     )
+    helius_api_keys: tuple[str, ...] = field(default_factory=_helius_keys)
+    # first configured key (backward-compat alias for single-key callers)
+    helius_api_key: str = field(default_factory=lambda: (_helius_keys()[0] if _helius_keys() else ""))
     dev_rep_enabled: bool = field(default_factory=lambda: _get_bool("DEV_REP_ENABLED", True))
     # veto a dev wallet that created >= N pump.fun tokens in the last 24h
     dev_rep_max_creates_24h: int = field(default_factory=lambda: _get_int("DEV_REP_MAX_CREATES_24H", 3))
