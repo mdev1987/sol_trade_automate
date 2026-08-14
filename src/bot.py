@@ -97,16 +97,28 @@ async def _confirm_liquidity(
     mint: str,
     sol_usd: float,
     floor: float,
+    entry_latency_s: float,
     window_s: float,
+    created_at: float | None = None,
 ) -> tuple[bool, float | None]:
     """Poll on-chain pool liquidity until it proves >= floor (backtest rule:
     fill only after the pool is real). Returns (ok, last_liq_usd).
 
-    Poll interval is 0.25s (4x/sec) so a confirming buy within a short
-    LIQ_CONFIRM_WINDOW_S is caught on the sub-second websocket stream, not a
-    beat later — matches the backtest filling at the first fill event.
+    Deadline is anchored to the launch's created_at: we give the pool
+    entry_latency_s to grow (matching the backtest arming at create + latency)
+    then up to window_s more to cross the floor — the backtest's fill window
+    [create+latency, create+latency+no_fill_timeout]. A window measured from
+    trade start samples the pool ~2s too early and rejects pools that cross
+    the floor just after (0 live fills in 8h vs 193 in the backtest).
     """
-    deadline = _t.monotonic() + max(window_s, 0.1)
+    now = _t.monotonic()
+    created_mono = now - (_t.time() - created_at) if created_at else now
+    start = created_mono + entry_latency_s
+    deadline = start + max(window_s, 0.1)
+    # if trade start is already past `start`, poll immediately from now
+    wait_first = start - now
+    if wait_first > 0:
+        await asyncio.sleep(wait_first)
     last_liq: float | None = None
     while True:
         liq = live_feed.pool_liquidity_usd(mint, sol_usd=sol_usd)
@@ -159,7 +171,9 @@ async def execute_trade(
                 mint,
                 sol_usd or 150.0,
                 settings.min_liquidity_usd,
+                settings.entry_latency_s,
                 settings.liq_confirm_window_s,
+                candidate.launch.created_at,
             )
         )
 

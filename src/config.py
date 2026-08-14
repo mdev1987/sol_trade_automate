@@ -160,8 +160,18 @@ class Settings:
     # and skips pools that haven't proven $MIN_LIQUIDITY_USD by then, exactly
     # like the backtest's first-fill-event check.
     min_liquidity_usd: float = field(default_factory=lambda: _get_float("MIN_LIQUIDITY_USD", 5000.0))
+    # how long after the launch we keep polling on-chain liquidity to prove the
+    # pool >= min_liquidity_usd, PLUS the latency before we start counting.
+    # Anchored to the launch's created_at (not trade start) so it matches the
+    # replay backtest: it arms at create + entry_latency_s and fills at the
+    # next buy event, up to +no_fill_timeout_s — i.e. pool-check window is
+    # [create+latency, create+latency+window]. A short window polled from trade
+    # start (create+~0.2s) samples the pool too early and rejects pools that
+    # cross the floor a couple of seconds later (observed: 0 fills in 8h live
+    # vs 193 in the backtest on the same config).
+    entry_latency_s: float = field(default_factory=lambda: _get_float("ENTRY_LATENCY_S", 2.0))
     liq_confirm_window_s: float = field(
-        default_factory=lambda: _get_float("LIQ_CONFIRM_WINDOW_S", 2.0)
+        default_factory=lambda: _get_float("LIQ_CONFIRM_WINDOW_S", 10.0)
     )
     # skip the buy when the token has already traded at more than
     # MAX_ENTRY_MULT x the launch (create) price. On pump.fun a fill far

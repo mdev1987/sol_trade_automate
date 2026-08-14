@@ -14,7 +14,8 @@ assert settings.starting_amount == 2.0
 assert settings.starting_balance == 20.0  # paper wallet bankroll
 assert settings.min_score == 65.0          # feed-score gate (backtest-validated, Aug-13 replay)
 assert settings.min_liquidity_usd == 4000.0  # entry liquidity floor (validated, Aug-13 replay)
-assert settings.liq_confirm_window_s == 2.0
+assert settings.entry_latency_s == 2.0        # give the pool time to grow before confirming
+assert settings.liq_confirm_window_s == 10.0  # ...then up to this long to cross the floor
 assert settings.stale_exit_sec == 60.0
 assert settings.max_candidate_age_min == 5.0
 assert settings.stop_loss == 0.82

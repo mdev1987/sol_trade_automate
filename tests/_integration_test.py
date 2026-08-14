@@ -241,7 +241,9 @@ async def main():
             return 12_000.0  # above the floor
 
     old_win = settings.liq_confirm_window_s
+    old_lat = settings.entry_latency_s
     settings.liq_confirm_window_s = 0.3
+    settings.entry_latency_s = 0.0
     try:
         st_t = TradeStats(dry_run=True)
         won_t, reason_t = await execute_trade(
@@ -257,6 +259,7 @@ async def main():
         assert won_r and reason_r == "take_profit", (won_r, reason_r)
     finally:
         settings.liq_confirm_window_s = old_win
+        settings.entry_latency_s = old_lat
     print("[OK] liquidity floor: thin pool aborts (bankroll untouched), rich pool proceeds")
 
     print("\nINTEGRATION TEST PASSED")
