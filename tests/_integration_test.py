@@ -165,9 +165,9 @@ async def main():
                                         TelegramNotifier(), s5)
     assert not won5 and reason5 == "stop_loss", (won5, reason5)
     assert s5.trades == 1 and s5.losses == 1, "simulated loss must be recorded"
-    assert s5.balance_usd == 20.0 - 2.0 + 1.64, s5.balance_usd  # proceeds = 2.0*0.82
+    assert s5.balance_usd == 20.0 - 2.0 + 2.0 * settings.dry_stop_fill, s5.balance_usd
     assert risk5.play_amount == 1.64, risk5.play_amount
-    print("[OK] regression: dry-run paper sell proceeds (amount*0.82)")
+    print(f"[OK] regression: dry-run paper sell proceeds (amount*{settings.dry_stop_fill})")
 
     # --- regression: pair with liquidity_usd=None must not crash the quote ---
     class NoLiqDex(FakeDexScreener):

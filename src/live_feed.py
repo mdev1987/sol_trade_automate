@@ -47,6 +47,9 @@ class LivePriceFeed:
         self.url = url or settings.pumpapi_ws_url
         self._trades = trades  # async iterator of (mint, price_sol)
         self._prices: dict[str, tuple[float, float]] = {}
+        # mint -> (peak price_sol seen, monotonic ts) — running post-launch
+        # peak for the MAX_ENTRY_PEAK_PCT anti-chase gate (entry-time check)
+        self._peaks: dict[str, tuple[float, float]] = {}
         # mint -> (quoteInPool SOL, monotonic ts) — on-chain pool liquidity
         self._liqs: dict[str, tuple[float, float]] = {}
         # per-mint asyncio.Event fired on every trade update — lets the exit
@@ -93,6 +96,7 @@ class LivePriceFeed:
                 async for mint, price, liq in trades:
                     now = time.monotonic()
                     self._prices[mint] = (float(price), now)
+                    self._track_peak(mint, float(price), now)
                     if liq is not None:
                         self._liqs[mint] = (float(liq), now)
                     self._wake(mint)
@@ -128,6 +132,7 @@ class LivePriceFeed:
                         if mint and isinstance(price, (int, float)) and price > 0:
                             now = time.monotonic()
                             self._prices[mint] = (float(price), now)
+                            self._track_peak(mint, float(price), now)
                             if isinstance(liq, (int, float)) and liq > 0:
                                 self._liqs[mint] = (float(liq), now)
                             self._wake(mint)
@@ -148,7 +153,14 @@ class LivePriceFeed:
             return
         cutoff = time.monotonic() - max_age_s
         self._prices = {m: v for m, v in self._prices.items() if v[1] >= cutoff}
+        self._peaks = {m: v for m, v in self._peaks.items() if v[1] >= cutoff}
         self._liqs = {m: v for m, v in self._liqs.items() if v[1] >= cutoff}
+
+    def _track_peak(self, mint: str, price: float, now: float) -> None:
+        """Record the running post-launch peak for the anti-chase gate."""
+        cur = self._peaks.get(mint)
+        if cur is None or price > cur[0]:
+            self._peaks[mint] = (price, now)
 
     def _wake(self, mint: str) -> None:
         """Set the per-mint event (fire-and-forget) on a fresh trade tick."""
@@ -186,6 +198,17 @@ class LivePriceFeed:
         if hit is None or time.monotonic() - hit[1] > max_age_s:
             return None
         return hit[0]
+
+    def peak_sol(self, mint: str, max_age_s: float = 300.0) -> float | None:
+        """Highest fresh SOL-per-token price seen for mint, or None.
+
+        Used by the MAX_ENTRY_PEAK_PCT gate to skip buys near the top of the
+        launch burst. Falls back to the latest price if only that is fresh.
+        """
+        hit = self._peaks.get(mint)
+        if hit is not None and time.monotonic() - hit[1] <= max_age_s:
+            return hit[0]
+        return None
 
     def last_trade_age(self, mint: str) -> float | None:
         """Seconds since the last buy/sell event for mint (None = never seen)."""

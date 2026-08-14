@@ -26,3 +26,5 @@ bot_plan/downloads/
 .pytest_cache/
 .opencode/
 bot_logs/
+# runtime pid file
+.sniper-bot-super.pid

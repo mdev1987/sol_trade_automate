@@ -132,6 +132,18 @@ class Settings:
     max_hold_min: float = field(default_factory=lambda: _get_float("MAX_HOLD_MIN", 30.0))
     # use the PumpAPI buy/sell stream for sub-second TP/SL triggers
     live_feed_exit: bool = field(default_factory=lambda: _get_bool("LIVE_FEED_EXIT", True))
+    # trailing stop: exit when price falls TRAIL_EXIT_PCT below the running
+    # peak since entry. Live analysis (DexPaprika 1m OHLCV, 5 real fills)
+    # showed entries land at/near the launch-pump ATH and then gap 75-85% in
+    # the same minute — the fixed 0.82 SL books ~-70% while a 15% trailing
+    # stop converts that to ~-15% (and locks gains when a position does pump).
+    # 0 = disable (legacy fixed TP/SL only).
+    trail_exit_pct: float = field(default_factory=lambda: _get_float("TRAIL_EXIT_PCT", 0.15))
+    # dry-run stop-loss fill realism: a real stop on these tokens fills near
+    # the dump bottom (~0.2-0.3x entry), not at the 0.82 trigger. Dry-run PnL
+    # books proceeds * DRY_STOP_FILL on a stop loss so projections aren't
+    # optimistic (live mode always uses the real fill price).
+    dry_stop_fill: float = field(default_factory=lambda: _get_float("DRY_STOP_FILL", 0.25))
     # minimum feed score for a launch to be queued (feed-data entry path).
     # Replay backtest (07/21 + 08/09) shows 45 lets in the anti-predictive
     # high-scorer cohort; 60 is the validated gate.
@@ -157,6 +169,12 @@ class Settings:
     # the replay backtest (mm5, 4-day battery) raised worst-day and total PnL
     # (+$28.61 vs +$6.42 with the pre-gate config; 0 = gate off).
     max_entry_mult: float = field(default_factory=lambda: _get_float("MAX_ENTRY_MULT", 5.0))
+    # skip the buy when the current price is within MAX_ENTRY_PEAK_PCT of the
+    # token's post-launch peak so far (i.e. at/near the top of the launch
+    # burst). Live analysis found real fills landed at 57-98% of the ATH and
+    # then dumped — an entry inside the top MAX_ENTRY_PEAK_PCT of the observed
+    # peak is chasing that burst. 0 = gate off.
+    max_entry_peak_pct: float = field(default_factory=lambda: _get_float("MAX_ENTRY_PEAK_PCT", 0.0))
 
     # dead-token exit: exit when the live feed saw no trade for this mint for
     # STALE_EXIT_SEC AND no DexScreener pair ever appeared (frees the single

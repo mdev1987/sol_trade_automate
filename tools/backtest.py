@@ -96,6 +96,12 @@ def main() -> None:
                          "MAX_ENTRY_MULT gate — 0 = off)")
     ap.add_argument("--take-profit", type=float, default=None)
     ap.add_argument("--stop-loss", type=float, default=None)
+    ap.add_argument("--trail-exit-pct", type=float, default=None,
+                    help="trailing stop: exit when price falls pct below the "
+                         "running peak since entry (default: settings.trail_exit_pct)")
+    ap.add_argument("--max-entry-peak-pct", type=float, default=None,
+                    help="skip fills within this fraction of the post-launch "
+                         "peak so far (default: settings.max_entry_peak_pct)")
     ap.add_argument("--slippage-model", choices=["tier", "impact"], default="tier",
                     help="tier=QuoteConfig.slippage_for tolerance as cost (conservative, "
                          "default); impact=2*trade_size/liquidity realized price impact")
@@ -125,6 +131,8 @@ def main() -> None:
         return sol_series.get(h, sol_series.get(nxt, sol_usd))
     min_liq = settings.min_liquidity_usd if args.min_liq is None else args.min_liq
     max_mult = settings.max_entry_mult if args.max_mult is None else args.max_mult
+    trail_pct = settings.trail_exit_pct if args.trail_exit_pct is None else args.trail_exit_pct
+    max_peak_pct = settings.max_entry_peak_pct if args.max_entry_peak_pct is None else args.max_entry_peak_pct
     quote = QuoteConfig()
 
     files = sorted(glob.glob(str(Path(args.data) / "*.parquet")))
@@ -144,6 +152,7 @@ def main() -> None:
     last_price: dict[str, float] = {}
     last_liq: dict[str, float] = {}
     last_trade_ts: dict[str, float] = {}
+    last_peak: dict[str, float] = {}
 
     # ---- risk (mirrors RiskManager + compounding on replay time)
     play_amount = settings.starting_amount
@@ -181,6 +190,7 @@ def main() -> None:
             "tokens": tokens, "amount": play_amount,
             "tp": fill_price * (args.take_profit or settings.take_profit),
             "sl": fill_price * (args.stop_loss or settings.stop_loss),
+            "peak": fill_price,  # running peak for the trailing stop
             "entered_at": ts_s, "last_price": fill_price,
             "entry_liq": liq, "last_liq": liq, "last_trade_ts": ts_s,
             # momentum at fill: fill price vs the create event price (SOL)
@@ -296,6 +306,9 @@ def main() -> None:
                 liq = (d["quoteInPool"][i] or 0.0) * 2.0 * sol_usd_at(ts_s)
                 if price:
                     last_price[mint] = price
+                    prev = last_peak.get(mint, 0.0)
+                    if price > prev:
+                        last_peak[mint] = price
                 if liq > 0:
                     last_liq[mint] = liq
                 last_trade_ts[mint] = ts_s
@@ -317,6 +330,14 @@ def main() -> None:
                             stats["high_mult"] += 1  # too late / topped out
                             try_arm(ts_s)
                             continue
+                        # anti-peak gate: mirror of MAX_ENTRY_PEAK_PCT — skip a
+                        # fill inside the top pct of the post-launch peak so far
+                        if max_peak_pct and last_peak.get(mint, 0.0) > 0:
+                            ratio = price / last_peak[mint]
+                            if ratio >= 1.0 - max_peak_pct:
+                                stats["at_peak"] += 1
+                                try_arm(ts_s)
+                                continue
                         open_position(armed[1], armed[2], price, fill_liq, ts_s)
                         stats["entries"] += 1
                         if args.verbose:
@@ -331,6 +352,8 @@ def main() -> None:
                 if pos is not None and mint == pos["mint"]:
                     if price:
                         pos["last_price"] = price
+                        if price > pos.get("peak", price):
+                            pos["peak"] = price
                     if liq > 0:
                         pos["last_liq"] = liq
                     pos["last_trade_ts"] = ts_s
@@ -338,6 +361,8 @@ def main() -> None:
                     lq = pos["last_liq"]
                     if p >= pos["tp"]:
                         close_position("take_profit", p, lq, ts_s)
+                    elif trail_pct and p <= pos["peak"] * (1.0 - trail_pct):
+                        close_position("trail_stop", p, lq, ts_s)
                     elif p <= pos["sl"]:
                         close_position("stop_loss", p, lq, ts_s)
                     elif lq < DEAD_POOL_LIQUIDITY_USD:
@@ -386,7 +411,7 @@ def main() -> None:
         "funnel": {k: stats[k] for k in
                    ("launches", "rug", "filter", "score_skip", "dev_veto", "qualified",
                     "entries", "no_fill", "thin_pool", "low_mult", "high_mult",
-                    "aged_out", "parse_error", "daily_halt")},
+                    "at_peak", "aged_out", "parse_error", "daily_halt")},
         "exit_reasons": dict(exit_reasons),
         "trades": len(trades), "wins": wins, "losses": losses,
         "winrate": round(wins / entries * 100, 1) if entries else 0.0,

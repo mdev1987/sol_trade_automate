@@ -1,5 +1,16 @@
 """
-Price monitoring & exit strategy — exit at 2x / 0.82x / dead pool / max hold.
+Price monitoring & exit strategy — TP / trailing stop / SL / dead pool / max hold.
+
+Exit ladder (checked on every fresh price, fastest source first):
+  1. take_profit  — price >= entry * TAKE_PROFIT (2.0x)
+  2. trail_stop   — price <= running_peak * (1 - TRAIL_EXIT_PCT); the running
+     peak is the highest price seen since entry. Live analysis (DexPaprika 1m
+     OHLCV, 5 real fills) showed entries land at/near the launch-pump ATH and
+     then gap 75-85% in the same minute — the fixed SL booked ~-70% while a
+     15% trail converts that to ~-15% and locks gains on positions that pump.
+  3. stop_loss    — price <= entry * STOP_LOSS (0.82x, hard floor / last resort)
+  4. dead_pool    — liquidity dried up
+  5. max_hold     — stuck-position watchdog
 
 Price sources (fastest first):
   1. LivePriceFeed  — PumpAPI buy/sell stream, sub-second (fresh <= 10s)
@@ -33,7 +44,7 @@ LIVE_TICK_S = 1.0  # fast loop when a fresh live price exists
 class ExitSignal:
     """Result of one monitor evaluation; exit=True triggers a sell."""
     exit: bool
-    reason: str  # "take_profit"|"stop_loss"|"dead_pool"|"no_trades"|"max_hold"|"shutdown"|"none"
+    reason: str  # "take_profit"|"trail_stop"|"stop_loss"|"dead_pool"|"no_trades"|"max_hold"|"shutdown"|"none"
     price_usd: float | None
     liquidity_usd: float | None
 
@@ -59,6 +70,10 @@ class PriceMonitor:
         self.stop_check = stop_check  # callable -> bool; exit "shutdown" when True
         self.take_profit_price = entry_price_usd * settings.take_profit
         self.stop_loss_price = entry_price_usd * settings.stop_loss
+        # trailing-stop state: the highest price seen since entry. Exits when
+        # the price falls TRAIL_EXIT_PCT below this peak, so a launch-burst
+        # dump (~-70% past the 0.82 SL) becomes a ~-15% exit instead.
+        self.trailing_peak = entry_price_usd
         self.started_at = time.monotonic()
         self.max_hold_s = settings.max_hold_min * 60.0
         self._last_ds = 0.0  # DexScreener throttle (poll_interval cadence)
@@ -75,9 +90,15 @@ class PriceMonitor:
             return None
 
     def _evaluate(self, price_usd: float, liquidity_usd: float | None) -> ExitSignal:
-        """TP / SL / dead-pool / max-hold evaluation on the best known price."""
+        """TP / trailing-stop / SL / dead-pool / max-hold evaluation."""
         if price_usd >= self.take_profit_price:
             return ExitSignal(True, "take_profit", price_usd, liquidity_usd)
+        # trailing stop: a position that peaked and rolled over exits here,
+        # BEFORE the fixed SL (TRAIL_EXIT_PCT below the running peak is tighter
+        # than STOP_LOSS on a flat/dumping entry) — this is the sell-on-first-
+        # red rule that turns launch-burst dumps into small losses.
+        if settings.trail_exit_pct > 0 and price_usd <= self.trailing_peak * (1.0 - settings.trail_exit_pct):
+            return ExitSignal(True, "trail_stop", price_usd, liquidity_usd)
         if price_usd <= self.stop_loss_price:
             return ExitSignal(True, "stop_loss", price_usd, liquidity_usd)
         if liquidity_usd is not None and liquidity_usd < DEAD_POOL_LIQUIDITY_USD:
@@ -108,6 +129,8 @@ class PriceMonitor:
                     log.info("DexScreener/live miss — Jupiter fallback price: %s", price_usd)
             except Exception as exc:  # noqa: BLE001 — never crash the monitor
                 log.warning("Jupiter price lookup failed for %s: %s", self.mint[:8], exc)
+        if price_usd is not None and price_usd > self.trailing_peak:
+            self.trailing_peak = price_usd
         if self._stale_dead():
             log.info("No live trades for %s — treating as dead (exit)", self.mint[:8])
             return ExitSignal(True, "no_trades", price_usd, liquidity)

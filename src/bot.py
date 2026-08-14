@@ -40,10 +40,13 @@ log = logging.getLogger("sniper_bot.bot")
 PAPER_QUOTE_SENTINEL = "paper quote: no transaction to execute"
 
 # simulated exit proceeds multipliers for dry-run (no real fill prices).
-# Unknown reasons (max_hold / shutdown) sell at the last known price instead.
+# Unknown reasons (trail_stop / max_hold / shutdown) sell at the last known
+# price instead (the monitor's trigger price is a real observed quote).
 _DRY_PROCEEDS = {
     "take_profit": lambda s, _sig: s.take_profit,
-    "stop_loss": lambda s, _sig: s.stop_loss,
+    # a real stop on these tokens fills near the dump bottom (~0.2-0.3x entry),
+    # not at the 0.82 trigger — book DRY_STOP_FILL so dry-run PnL is realistic.
+    "stop_loss": lambda s, _sig: s.dry_stop_fill,
     "dead_pool": lambda s, _sig: 0.0,
 }
 
@@ -259,6 +262,38 @@ async def execute_trade(
                     return False, "topped_out"
         except Exception:
             log.exception("entry-mult gate failed open for %s", candidate.launch.symbol)
+
+    # --- anti-peak entry gate: don't buy at/near the top of the launch burst.
+    # Live analysis found real fills landed at 57-98% of the ATH then dumped —
+    # a fill inside the top MAX_ENTRY_PEAK_PCT of the post-launch peak is
+    # chasing that burst. SKIP when current price >= peak*(1-pct). Fail-open.
+    if settings.max_entry_peak_pct > 0 and live_feed is not None:
+        try:
+            cur_price = live_feed.price_sol(mint)
+            peak = live_feed.peak_sol(mint)
+            if cur_price and peak and peak > 0:
+                ratio = cur_price / peak
+                if ratio >= 1.0 - settings.max_entry_peak_pct:
+                    log.info(
+                        "AT-PEAK %s — price %.0f%% of post-launch peak — skipping",
+                        candidate.launch.symbol,
+                        ratio * 100.0,
+                    )
+                    append_journal(
+                        {
+                            "type": "trade",
+                            "mint": mint,
+                            "symbol": candidate.launch.symbol,
+                            "side": "buy",
+                            "status": "failed",
+                            "error": f"at_peak:{ratio:.2f}",
+                        }
+                    )
+                    if stats:
+                        stats.record_buy_failure(candidate.launch.symbol, "at_peak")
+                    return False, "at_peak"
+        except Exception:
+            log.exception("entry-peak gate failed open for %s", candidate.launch.symbol)
 
     # 1) BUY via Jupiter (quote gate + managed execute)
     buy_result: SwapResult = await jupiter.buy(mint, amount, liquidity_usd)

@@ -12,13 +12,16 @@ from config import settings
 
 assert settings.starting_amount == 2.0
 assert settings.starting_balance == 20.0  # paper wallet bankroll
-assert settings.min_score == 60.0          # feed-score gate (backtest-validated)
-assert settings.min_liquidity_usd == 5000.0  # entry liquidity floor (validated)
+assert settings.min_score == 65.0          # feed-score gate (backtest-validated, Aug-13 replay)
+assert settings.min_liquidity_usd == 4000.0  # entry liquidity floor (validated, Aug-13 replay)
 assert settings.liq_confirm_window_s == 2.0
 assert settings.stale_exit_sec == 60.0
 assert settings.max_candidate_age_min == 5.0
 assert settings.stop_loss == 0.82
 assert settings.take_profit == 2.0
+assert settings.trail_exit_pct == 0.15   # trailing stop (0 = fixed TP/SL only)
+assert settings.dry_stop_fill == 0.25    # realistic dry-run stop-loss fill
+assert settings.max_entry_peak_pct == 0.0  # anti-peak entry gate (off by default)
 assert settings.slippage_bps == 150
 assert settings.play_floor == 1.0
 assert settings.dry_run is True
@@ -222,6 +225,70 @@ assert not sig2.exit, "recent trade -> keep holding"
 sig3 = asyncio.run(_stale_case(last_age=None, feed_age=10.0, grace=0.0))
 assert not sig3.exit, "feed reconnected -> no false exit"
 print("[OK] dead-token exit (no_trades: stale->exit, recent->hold, reconnect->hold)")
+
+# 9b) trailing stop — a position that peaks and rolls over exits ~-15% BEFORE
+# the fixed SL, and locks gains when it pumps first. Direct _evaluate tests.
+class FakeLivePeak:
+    """Live feed with a controllable price for the trailing-stop case."""
+    def __init__(self, price):
+        """Set the current price."""
+        self.price = price
+    async def price_usd(self, mint, max_age_s=10.0):
+        """Return the configured price."""
+        return self.price
+    def last_trade_age(self, mint):
+        """Recently traded -> not stale."""
+        return 5.0
+    def feed_age(self):
+        """An old stream age."""
+        return 300.0
+
+def _mon():
+    """A monitor with the current default TRAIL_EXIT_PCT (0.15)."""
+    return pm_mod.PriceMonitor(FakeDSEmpty(), FakeJupNoPrice(),
+                               entry_price_usd=1e-6, mint="TrailMint",
+                               live_feed=FakeLivePeak(1e-6))
+
+mon = _mon()
+old_trail = settings.trail_exit_pct
+old_sl = settings.stop_loss
+settings.trail_exit_pct = 0.15
+settings.stop_loss = 0.82
+try:
+    # peak rises to +50% -> trailing_peak tracks it; price still near peak
+    mon.trailing_peak = 1.5e-6
+    mon.live_feed.price = 1.45e-6
+    sig = asyncio.run(mon.check())
+    assert not sig.exit, "above trail trigger -> hold"
+    # falls 20% below the peak but still above the 0.82 SL -> trail_stop
+    sig = asyncio.run(_mon().check())
+    # simulate the rollover: peak 1.5e-6, price 1.2e-6 (20% off peak)
+    mon2 = _mon(); mon2.trailing_peak = 1.5e-6
+    sig = pm_mod.PriceMonitor._evaluate(mon2, 1.2e-6, None)
+    assert sig.exit and sig.reason == "trail_stop", sig
+    # flat entry that dumps: peak == entry -> trail exits at -15% (0.85x),
+    # BEFORE the 0.82 SL would trigger — the sell-on-first-red rule
+    mon3 = _mon()  # trailing_peak == entry_price_usd
+    sig = pm_mod.PriceMonitor._evaluate(mon3, 0.84e-6, None)
+    assert sig.exit and sig.reason == "trail_stop", sig
+    # deep gap straight through both levels -> trail_stop still fires first
+    # (trail threshold 0.85*peak sits above the 0.82 SL whenever peak >= entry)
+    mon4 = _mon(); mon4.trailing_peak = 1.5e-6
+    sig = pm_mod.PriceMonitor._evaluate(mon4, 0.7e-6, None)
+    assert sig.exit and sig.reason == "trail_stop", sig
+    # TP still wins even after a big peak (take_profit checked first)
+    mon5 = _mon(); mon5.trailing_peak = 1.5e-6
+    sig = pm_mod.PriceMonitor._evaluate(mon5, 2.1e-6, None)
+    assert sig.exit and sig.reason == "take_profit", sig
+    # disabled (TRAIL_EXIT_PCT=0) -> legacy fixed TP/SL behavior
+    settings.trail_exit_pct = 0.0
+    mon6 = _mon(); mon6.trailing_peak = 1.5e-6
+    sig = pm_mod.PriceMonitor._evaluate(mon6, 1.2e-6, None)
+    assert not sig.exit, "trail disabled -> hold until SL/TP"
+finally:
+    settings.trail_exit_pct = old_trail
+    settings.stop_loss = old_sl
+print("[OK] trailing stop (trail_stop ~-15% before SL, gains locked, TP first)")
 
 # 10) monitor network resilience — a failing DexScreener/Jupiter must NOT raise
 class FakeDSExplodes:
